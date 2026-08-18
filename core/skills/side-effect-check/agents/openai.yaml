@@ -1,0 +1,4 @@
+interface:
+  display_name: "Side Effect Check"
+  short_description: "Trace consumers and regression paths"
+  default_prompt: "Use $side-effect-check to trace consumers, runtime paths, and residual risk for this change."

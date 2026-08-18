@@ -1,0 +1,4 @@
+interface:
+  display_name: "Work Closeout"
+  short_description: "Verify and hand off completed work safely"
+  default_prompt: "Use $work-closeout to verify completion, summarize residual risk, and prepare a safe handoff."

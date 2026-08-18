@@ -1,0 +1,4 @@
+interface:
+  display_name: "Critical Review"
+  short_description: "Find only release-blocking regressions"
+  default_prompt: "Use $critical-review to inspect this diff for reproducible release-blocking regressions only."

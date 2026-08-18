@@ -1,0 +1,7 @@
+.DS_Store
+*.backup.*
+work/
+tmp/
+.env
+.env.*
+!.env.example

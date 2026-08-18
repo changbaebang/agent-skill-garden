@@ -1,0 +1,9 @@
+# Extended regular expressions, one per line. Blank lines and comments are ignored.
+/Users/[A-Za-z0-9._-]+/
+xox[pbar]-[A-Za-z0-9-]{10,}
+gh[pousr]_[A-Za-z0-9]{20,}
+github_pat_[A-Za-z0-9_]{20,}
+AKIA[0-9A-Z]{16}
+-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----
+[A-Za-z0-9.-]+\.atlassian\.net
+[A-Za-z0-9.-]+\.slack\.com

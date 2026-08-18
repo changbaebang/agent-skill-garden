@@ -1,0 +1,4 @@
+interface:
+  display_name: "Skill Usage Audit"
+  short_description: "Audit skill coverage and trigger quality"
+  default_prompt: "Use $skill-usage-audit to inspect recent usage evidence and recommend skill creation, tuning, merging, or removal."

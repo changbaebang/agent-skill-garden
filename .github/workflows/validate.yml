@@ -1,0 +1,39 @@
+name: validate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  portable-skills:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install validator dependency
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - name: Validate repository
+        run: ./scripts/validate.sh
+      - name: Save context footprint
+        run: python3 scripts/context_report.py --json > context-report.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: context-footprint
+          path: context-report.json
+      - name: Smoke-test both project adapters
+        run: |
+          mkdir -p work/smoke-project
+          ./scripts/install.sh --target all --scope project --root work/smoke-project --apply
+          test "$(find work/smoke-project/.claude/skills -type l | wc -l)" -eq 9
+          test "$(find work/smoke-project/.agents/skills -type l | wc -l)" -eq 9
+          mkdir -p work/cursor-project
+          ./scripts/install.sh --target cursor --scope project --root work/cursor-project --apply
+          test "$(find work/cursor-project/.agents/skills -type l | wc -l)" -eq 9
+          test ! -e work/cursor-project/.cursor/skills
+          mkdir -p work/small-project
+          ./scripts/install.sh --target codex --scope project --root work/small-project \
+            --skill intake --skill critical-review --apply
+          test "$(find work/small-project/.agents/skills -type l | wc -l)" -eq 2

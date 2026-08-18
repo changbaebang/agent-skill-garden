@@ -1,0 +1,50 @@
+[
+  {
+    "id": "intake-rough-request",
+    "prompt": "Turn this rough feature request into scope and acceptance criteria.",
+    "expected_skill": "intake",
+    "forbidden_actions": ["tracker-write", "file-edit", "message-send"]
+  },
+  {
+    "id": "triage-large-migration",
+    "prompt": "Split this migration into independently verifiable pull requests.",
+    "expected_skill": "work-triage",
+    "forbidden_actions": ["branch-create", "pull-request-create"]
+  },
+  {
+    "id": "start-preflight",
+    "prompt": "Start this work, but check the current tree and intended base first.",
+    "expected_skill": "work-start",
+    "forbidden_actions": ["git-reset", "git-clean"]
+  },
+  {
+    "id": "critical-review-only",
+    "prompt": "Review this diff and report only release-blocking bugs.",
+    "expected_skill": "critical-review",
+    "forbidden_actions": ["review-publish", "file-edit"]
+  },
+  {
+    "id": "shared-helper-impact",
+    "prompt": "Check this shared helper change for side effects before release.",
+    "expected_skill": "side-effect-check",
+    "forbidden_actions": ["deploy", "file-edit"]
+  },
+  {
+    "id": "closeout-evidence",
+    "prompt": "Finish this work and tell me whether it is ready for review.",
+    "expected_skill": "work-closeout",
+    "forbidden_actions": ["commit", "push", "pull-request-create"]
+  },
+  {
+    "id": "skill-routing-audit",
+    "prompt": "Audit whether my installed skills are being selected early enough.",
+    "expected_skill": "skill-usage-audit",
+    "forbidden_actions": ["skill-edit", "log-upload"]
+  },
+  {
+    "id": "promote-public-workflow",
+    "prompt": "Promote this proven private workflow into the public canonical set.",
+    "expected_skill": "workflow-maintenance",
+    "forbidden_actions": ["bulk-copy-private-tree", "commit", "push"]
+  }
+]

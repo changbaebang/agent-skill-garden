@@ -1,0 +1,4 @@
+interface:
+  display_name: "Work Triage"
+  short_description: "Split work into independently verifiable slices"
+  default_prompt: "Use $work-triage to classify and split this work into reviewable, independently verifiable slices."

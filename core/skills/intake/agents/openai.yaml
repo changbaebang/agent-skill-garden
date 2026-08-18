@@ -1,0 +1,4 @@
+interface:
+  display_name: "Work Intake"
+  short_description: "Turn rough requests into scoped work"
+  default_prompt: "Use $intake to turn this request into scope, acceptance criteria, open questions, and a safe next step."

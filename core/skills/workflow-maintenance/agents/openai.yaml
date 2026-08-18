@@ -1,0 +1,4 @@
+interface:
+  display_name: "Workflow Maintenance"
+  short_description: "Curate public workflows without sanitizing copies"
+  default_prompt: "Use $workflow-maintenance to promote reusable workflow changes into the public canonical repository safely."

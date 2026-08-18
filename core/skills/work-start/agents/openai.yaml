@@ -1,0 +1,4 @@
+interface:
+  display_name: "Work Start"
+  short_description: "Begin scoped work without hidden side effects"
+  default_prompt: "Use $work-start to verify the base, working tree, scope, and authorization before starting implementation."

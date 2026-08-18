@@ -1,0 +1,4 @@
+interface:
+  display_name: "Collaboration Awareness"
+  short_description: "Detect conflicts with concurrent work"
+  default_prompt: "Use $collaboration-awareness to compare this change with active work and identify coordination risks."
