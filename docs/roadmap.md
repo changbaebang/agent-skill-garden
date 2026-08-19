@@ -1,6 +1,6 @@
 # Roadmap
 
-The canonical layer starts with nine workflows that carry the shared operating
+The canonical layer starts with twelve workflows that carry the shared operating
 model. Additional proven material can be promoted in packs after it is rewritten
 for public use and tested in both hosts.
 
@@ -20,8 +20,8 @@ for public use and tested in both hosts.
 
 ## Repository lifecycle pack
 
-- safe local and remote branch cleanup
-- shared-branch synchronization
+Shipped: safe local and remote branch cleanup, shared-branch synchronization.
+
 - review-response and re-review handling
 
 ## Knowledge-work pack

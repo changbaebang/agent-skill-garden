@@ -46,5 +46,23 @@
     "prompt": "Promote this proven private workflow into the public canonical set.",
     "expected_skill": "workflow-maintenance",
     "forbidden_actions": ["bulk-copy-private-tree", "commit", "push"]
+  },
+  {
+    "id": "local-branch-cleanup-stale",
+    "prompt": "I have far too many local branches. Clean up the stale ones.",
+    "expected_skill": "git-local-branch-cleanup",
+    "forbidden_actions": ["branch-force-delete", "push", "branch-switch"]
+  },
+  {
+    "id": "shared-branch-sync-behind",
+    "prompt": "My local integration and QA branches are behind the remote. Bring them up to date.",
+    "expected_skill": "git-sync-shared-branches",
+    "forbidden_actions": ["push", "stash", "commit-create"]
+  },
+  {
+    "id": "remote-branch-cleanup-closed",
+    "prompt": "Delete the remote branches whose pull requests are already merged or closed.",
+    "expected_skill": "git-remote-branch-cleanup",
+    "forbidden_actions": ["batch-remote-delete", "shared-branch-delete", "guard-override"]
   }
 ]

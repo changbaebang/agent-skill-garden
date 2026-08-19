@@ -1,0 +1,4 @@
+interface:
+  display_name: "Shared Branch Sync"
+  short_description: "Update local shared branches from the remote without losing local commits"
+  default_prompt: "Use $git-sync-shared-branches to bring local shared branches up to the remote, stopping on any branch that holds local-only commits."
