@@ -34,8 +34,8 @@ requests may deserve a new or better skill.
 
 ## What you can copy
 
-- Nine portable workflows for intake, execution, review, closeout, and skill
-  maintenance.
+- Twelve portable workflows for intake, execution, review, repository lifecycle,
+  closeout, and skill maintenance.
 - Shared policies for skill-first routing, explicit change authority, and
   read-back verification.
 - Cursor, Claude Code, and Codex adapters backed by the same canonical skills.

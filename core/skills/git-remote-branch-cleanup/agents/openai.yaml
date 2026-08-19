@@ -1,0 +1,4 @@
+interface:
+  display_name: "Remote Branch Cleanup"
+  short_description: "Delete merged or closed remote branches after measuring what is lost"
+  default_prompt: "Use $git-remote-branch-cleanup to list deletable remote branches with the work each deletion would lose, and delete only what I approve."

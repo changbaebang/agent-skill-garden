@@ -38,7 +38,7 @@ Skills로 만들고, 여러 도구에서 같은 원칙을 유지하며, 선택·
 
 ## 복제해서 쓸 수 있는 것
 
-- intake, 실행, 리뷰, closeout, 스킬 유지보수를 다루는 9개의 범용 스킬
+- intake, 실행, 리뷰, 저장소 라이프사이클, closeout, 스킬 유지보수를 다루는 12개의 범용 스킬
 - skill-first 라우팅, 변경 권한 분리, 변경 후 read-back 검증 정책
 - 하나의 스킬 원본을 공유하는 Cursor, Claude Code, Codex adapter
 - 기존 파일을 덮어쓰지 않고 먼저 계획을 보여주는 설치 스크립트

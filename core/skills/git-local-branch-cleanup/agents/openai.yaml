@@ -1,0 +1,4 @@
+interface:
+  display_name: "Local Branch Cleanup"
+  short_description: "Delete stale local branches that hold no unique work"
+  default_prompt: "Use $git-local-branch-cleanup to classify local branches by what would be lost and delete only the ones that hold no unique work."
