@@ -12,17 +12,38 @@ from typing import Iterable
 
 
 CATEGORY_RULES = [
-    ("skill-maintenance", re.compile(r"스킬|skill|agent.?skill|claude|codex|cursor", re.I)),
-    ("code-review", re.compile(r"코드\s*리뷰|pr\s*리뷰|재리뷰|review|release.?block|approve", re.I)),
-    ("issue-planning", re.compile(r"jira|ticket|티켓|범위|scope|요구사항|acceptance|story.?point|estimate", re.I)),
-    ("release-deploy", re.compile(r"배포|deploy|release|qa|stage|staging|smoke", re.I)),
-    ("incident-observability", re.compile(r"장애|incident|sentry|grafana|datadog|monitor|알림|voc", re.I)),
-    ("testing-verification", re.compile(r"검증|verify|test|테스트|lint|type.?check|ci|부작용|side.?effect", re.I)),
-    ("knowledge-writing", re.compile(r"문서|블로그|회고|draft|초안|write|publish|confluence|wiki", re.I)),
-    ("git-collaboration", re.compile(r"github|pull request|\bpr\b|commit|커밋|push|merge|머지|branch|브랜치", re.I)),
-    ("local-development", re.compile(r"로컬|local|dev.?server|서버|mkcert|localhost", re.I)),
-    ("research-learning", re.compile(r"조사|research|learn|학습|비교|찾아|설명", re.I)),
-    ("implementation", re.compile(r"구현|수정|리팩터|refactor|bug|버그|fix|code|코드", re.I)),
+    # Latin alternatives carry word boundaries. Without them "ci" matches inside
+    # "decision" and "specific", and "fix" matches inside "prefix", so ordinary
+    # English prose lands in verification or implementation.
+    #
+    # Host names are deliberately absent. Every transcript in scope was produced
+    # inside one of these tools, so "claude", "codex", and "cursor" appear in
+    # requests of every kind and carry no signal about the work.
+    ("skill-maintenance", re.compile(r"스킬|\bskills?\b|agent.?skill", re.I)),
+    ("code-review", re.compile(r"리뷰|\breviews?\b|release.?block|\bapprove\b", re.I)),
+    ("issue-planning", re.compile(
+        r"\bjira\b|\bticket\b|티켓|범위|\bscope\b|요구사항|\bacceptance\b"
+        r"|story.?point|\bestimate\b", re.I)),
+    ("release-deploy", re.compile(
+        r"배포|\bdeploy\w*\b|\brelease\b|\bqa\b|\bstag(?:e|ing)\b|\bsmoke\b", re.I)),
+    ("incident-observability", re.compile(
+        r"장애|\bincident\b|\bsentry\b|\bgrafana\b|\bdatadog\b|\bmonitor\w*\b"
+        r"|알림|\bvoc\b", re.I)),
+    ("testing-verification", re.compile(
+        r"검증|\bverif\w*\b|\btests?\b|테스트|\blint\b|type.?check|\bci\b"
+        r"|부작용|side.?effect", re.I)),
+    ("knowledge-writing", re.compile(
+        r"문서|블로그|회고|\bdrafts?\b|초안|\bwrite\b|\bpublish\w*\b"
+        r"|\bconfluence\b|\bwiki\b", re.I)),
+    ("git-collaboration", re.compile(
+        r"\bgithub\b|pull request|\bpr\b|\bcommits?\b|커밋|\bpush\b|\bmerge\w*\b"
+        r"|머지|\bbranch\w*\b|브랜치", re.I)),
+    ("local-development", re.compile(
+        r"로컬|\blocal\w*\b|dev.?server|서버|\bmkcert\b", re.I)),
+    ("research-learning", re.compile(
+        r"조사|\bresearch\b|\blearn\w*\b|학습|비교|찾아|설명", re.I)),
+    ("implementation", re.compile(
+        r"구현|수정|리팩터|\brefactor\w*\b|\bbugs?\b|버그|\bfix\w*\b|\bcode\b|코드", re.I)),
 ]
 
 SYSTEM_PROMPT = re.compile(
@@ -32,6 +53,18 @@ SYSTEM_PROMPT = re.compile(
     r"<collaboration_mode>|# AGENTS\.md instructions)",
     re.I,
 )
+# Category rules score prose. Two kinds of text in a transcript are not prose and
+# must not be scored: context the host or editor injected around a request, and
+# paths or links the person pasted into one. Both carry words the rules match on,
+# and the match is an artifact of the machine rather than of the request. A path
+# under "Codes" scores as implementation, a path under ".codex" scores as skill
+# maintenance, and a link to any host named in the rules scores as that category
+# no matter what was asked.
+CONTEXT_BLOCK = re.compile(
+    r"<([a-z][a-z0-9_-]*)\b[^>]*>.*?</\1>|<[a-z][a-z0-9_-]*\b[^>]*/?>",
+    re.I | re.S,
+)
+PASTED_LOCATOR = re.compile(r"https?://\S+|(?<!\w)[~.]?/[\w.~-]+(?:/[\w.~-]+)+")
 SKILL_PATH = re.compile(r"(?:^|[/\\])skills[/\\](?:\.system[/\\])?([a-z0-9:_-]+)[/\\]SKILL\.md", re.I)
 SKILL_URI = re.compile(r"skill://(?:[^/]+/)?([a-z0-9:_-]+)/SKILL\.md", re.I)
 SKILL_DOLLAR = re.compile(r"(?:^|[\s`])\$([a-z0-9][a-z0-9:_-]*)(?=[\s`,.)\]}]|$)", re.I)
@@ -65,9 +98,15 @@ def parse_timestamp(value: object) -> datetime | None:
         return None
 
 
+def prose(text: str) -> str:
+    """The part a person composed: injected blocks and pasted locators removed."""
+    return PASTED_LOCATOR.sub(" ", CONTEXT_BLOCK.sub(" ", text))
+
+
 def category_for(prompt: str) -> str:
+    scored = prose(prompt)
     for name, pattern in CATEGORY_RULES:
-        if pattern.search(prompt):
+        if pattern.search(scored):
             return name
     return "other"
 
@@ -131,6 +170,8 @@ def parse_claude(root: Path, cutoff: datetime, installed: set[str]) -> list[Turn
                     prompt = text_blocks(content).strip()
                     if not prompt or SYSTEM_PROMPT.search(prompt):
                         continue
+                    if not CONTEXT_BLOCK.sub(" ", prompt).strip():
+                        continue
                     skills = explicit_skills(prompt, installed)
                     current = Turn(
                         host="claude",
@@ -192,6 +233,8 @@ def parse_codex(root: Path, cutoff: datetime, installed: set[str]) -> list[Turn]
                         continue
                     prompt = prompt.strip()
                     if not prompt or SYSTEM_PROMPT.search(prompt):
+                        continue
+                    if not CONTEXT_BLOCK.sub(" ", prompt).strip():
                         continue
                     skills = explicit_skills(prompt, installed)
                     current = Turn(
