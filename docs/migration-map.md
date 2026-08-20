@@ -15,3 +15,4 @@ setup. Those sources remain private and are not mirrored into this repository.
 | `collaboration-awareness` | file, module, dependency, and cross-work conflicts |
 | `skill-usage-audit` | evidence-based trigger and coverage analysis |
 | `workflow-maintenance` | deliberate promotion instead of sanitize-and-publish |
+| `blog-writing-workflow` | local voice profile, draft review, explicit publishing, and live verification |

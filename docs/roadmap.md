@@ -1,6 +1,6 @@
 # Roadmap
 
-The canonical layer starts with fourteen workflows that carry the shared operating
+The canonical layer starts with fifteen workflows that carry the shared operating
 model. Additional proven material can be promoted in packs after it is rewritten
 for public use and tested in both hosts.
 
@@ -28,7 +28,9 @@ Shipped: safe local and remote branch cleanup, shared-branch synchronization.
 
 ## Knowledge-work pack
 
-- technical draft creation and publication checks
+Shipped: blog profile initialization, technical draft creation, publication
+checks, and explicit publication boundaries.
+
 - learning and topic-radar workflows
 
 A pack is not accepted because a private version exists. It must meet the

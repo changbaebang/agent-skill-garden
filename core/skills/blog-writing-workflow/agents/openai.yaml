@@ -1,0 +1,4 @@
+interface:
+  display_name: "Blog Writing Workflow"
+  short_description: "Learn a blog voice and guide posts to publication"
+  default_prompt: "Use $blog-writing-workflow to initialize or load this blog's profile, then handle only the requested writing or publication stage."

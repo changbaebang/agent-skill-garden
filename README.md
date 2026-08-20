@@ -13,6 +13,11 @@ It is an opinionated reference setup, not a new agent framework and not a dump
 of private configuration. Clone it as a starting point, keep what fits your
 work, and cultivate it from evidence in your own usage.
 
+The garden is also a way to carry experience forward. Tools, repositories,
+teams, and roles can change, while a well-extracted decision rule or verified
+workflow remains useful. Private context stays behind; the reusable judgment,
+procedure, and safety boundary travel with the developer.
+
 ## The idea
 
 You already repeat useful ways of working with an agent, often without naming
@@ -34,8 +39,8 @@ requests may deserve a new or better skill.
 
 ## What you can copy
 
-- Fourteen portable workflows for intake, execution, review, verification,
-  repository lifecycle, closeout, and skill maintenance.
+- Fifteen portable workflows for intake, execution, review, verification,
+  repository lifecycle, knowledge work, closeout, and skill maintenance.
 - Shared policies for skill-first routing, explicit change authority, and
   read-back verification.
 - Cursor, Claude Code, and Codex adapters backed by the same canonical skills.
@@ -164,6 +169,26 @@ forbidden side effects. Static validation, unit tests, synthetic cases, and
 local aggregate evidence form the default feedback loop. Inspect a bounded,
 redacted prompt sample only when a specific routing failure cannot otherwise be
 explained.
+
+## Initialize a portable blog workflow
+
+`blog-writing-workflow` can inspect an existing Markdown blog, create a local
+inventory without copying article bodies, and help the agent produce a
+reviewable voice and publication profile. The same profile then guides drafting,
+polishing, publication checks, and explicitly authorized publishing.
+
+```bash
+python3 core/skills/blog-writing-workflow/scripts/blog_inventory.py \
+  path/to/blog \
+  --output path/to/blog/.agent-blog/blog-inventory.json
+```
+
+The generated inventory and profile stay local by default. The public skill
+contains the workflow contract, not one author's content, site URL, or voice.
+After installation, users can simply ask the agent to initialize the current
+blog, write a draft, run a publication check, or publish an approved post. See
+the [blog workflow guide](docs/blog-workflow.md) for the complete onboarding
+flow.
 
 ## Design rules
 
