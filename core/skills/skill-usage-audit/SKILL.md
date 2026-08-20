@@ -31,6 +31,18 @@ Use a user-specified period or a recent representative window. Inspect actual
 request samples, not only counts. Remove tool results, system injections,
 subagent prompts, repeated pasted assistant output, and truncated noise.
 
+Score only what the person composed. Editors and hosts wrap context in tags and
+prepend it to a real request, and people paste paths and links into ordinary
+requests; both carry words the category rules match on. Strip the block and keep
+the remainder, because dropping the whole event loses the request while keeping
+it scores a file path as if it had been typed.
+
+Two rule-level traps follow from the same idea. Give short Latin tokens word
+boundaries, or `ci` matches inside `decision` and `fix` inside `prefix`. And keep
+host names out of the rules entirely: every transcript in scope was produced
+inside those tools, so their names appear in requests of every kind and decide
+nothing.
+
 For Claude Code, an explicit skill invocation event can be direct evidence. For
 Codex, loading a `SKILL.md` in the same turn is useful evidence but may still
 produce false negatives when logs are compacted or metadata-only routing occurs.

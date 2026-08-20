@@ -24,6 +24,41 @@ def write_jsonl(path: Path, events: list[dict]) -> None:
     )
 
 
+class CategoryScoringTest(unittest.TestCase):
+    """A category must follow the request, not the machine it was typed on."""
+
+    def test_pasted_locators_are_not_scored_as_prose(self) -> None:
+        # The rules match "code" and "codex"; both appear here only inside a path.
+        self.assertEqual(AUDIT.category_for("이 파일 좀 봐줘 /home/me/Codes/shop/a.ts"), "other")
+        self.assertEqual(
+            AUDIT.category_for("이 초안 어디 있어? ~/Documents/Codex/notes.md"),
+            "knowledge-writing",
+        )
+        self.assertEqual(
+            AUDIT.category_for("https://example.com/blog/local-server-setup 이거 읽어봐"),
+            "other",
+        )
+
+    def test_injected_context_is_not_scored_as_prose(self) -> None:
+        block = "<ide_selection>lines 48 to 51 from /home/me/Codes/shop/a.ts</ide_selection>"
+        self.assertEqual(AUDIT.category_for(block + "이 초안 어디에 있어?"), "knowledge-writing")
+        self.assertEqual(AUDIT.prose(block).strip(), "")
+
+    def test_host_names_do_not_decide_the_category(self) -> None:
+        # Every transcript in scope is produced inside these tools, so their names
+        # appear in requests of every kind and must not outrank the request itself.
+        self.assertEqual(AUDIT.category_for("claude code 로 PR 리뷰 해줘"), "code-review")
+        self.assertEqual(AUDIT.category_for("codex 에서 배포 승인 확인해줘"), "release-deploy")
+        self.assertEqual(AUDIT.category_for("cursor 로 이 버그 수정해줘"), "implementation")
+        self.assertEqual(AUDIT.category_for("스킬 최적화 해줘"), "skill-maintenance")
+
+    def test_short_latin_tokens_require_word_boundaries(self) -> None:
+        self.assertEqual(AUDIT.category_for("prefix 를 바꿔줘"), "other")       # not "fix"
+        self.assertEqual(AUDIT.category_for("이 decision 을 기록해줘"), "other")  # not "ci"
+        self.assertEqual(AUDIT.category_for("specific 한 조건 알려줘"), "other")  # not "ci"
+        self.assertEqual(AUDIT.category_for("이 버그 fix 해줘"), "implementation")
+
+
 class UsageAuditTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -70,6 +105,42 @@ class UsageAuditTest(unittest.TestCase):
         self.assertTrue(turns[0].skill_first)
         self.assertEqual(turns[0].skills, {"critical-review"})
         self.assertNotIn(secret_prompt, json.dumps(report, ensure_ascii=False))
+
+    def test_editor_context_blocks_do_not_become_turns_or_categories(self) -> None:
+        opened_file = (
+            "<ide_opened_file>The user opened the file "
+            "/home/dev/Codes/shop/src/checkout.ts in the IDE.</ide_opened_file>"
+        )
+        selection = (
+            "<ide_selection>The user selected lines 48 to 51 from "
+            "/home/dev/Codes/shop/src/checkout.ts</ide_selection>"
+        )
+        write_jsonl(
+            self.root / "project" / "session.jsonl",
+            [
+                {
+                    "timestamp": self.timestamp,
+                    "type": "user",
+                    "message": {"role": "user", "content": [{"type": "text", "text": opened_file}]},
+                },
+                {
+                    "timestamp": self.timestamp,
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": selection + "이 블로그 초안 어디에 있어?"}],
+                    },
+                },
+            ],
+        )
+
+        turns = AUDIT.parse_claude(self.root, self.cutoff, set())
+
+        # A context block alone is not a request, so it must not become a turn at all.
+        # Left in place it would match the implementation rule through the "Codes"
+        # path segment and be reported as coding work.
+        self.assertEqual(len(turns), 1)
+        self.assertEqual(turns[0].category, "knowledge-writing")
 
     def test_codex_infers_skill_evidence_from_skill_file_read(self) -> None:
         turn_id = "turn-1"
