@@ -43,7 +43,7 @@ Skills로 만들고, 여러 도구에서 같은 원칙을 유지하며, 선택·
 
 ## 복제해서 쓸 수 있는 것
 
-- intake, 실행, 리뷰, 검증, 저장소 라이프사이클, 지식 작업, closeout, 스킬 유지보수를 다루는 20개의 범용 스킬
+- intake, 실행, 리뷰, 검증, 저장소 라이프사이클, 지식 작업, closeout, 스킬 유지보수를 다루는 21개의 범용 스킬
 - skill-first 라우팅, 변경 권한 분리, 변경 후 read-back 검증 정책
 - 하나의 스킬 원본을 공유하는 Cursor, Claude Code, Codex adapter
 - 기존 파일을 덮어쓰지 않고 먼저 계획을 보여주는 설치 스크립트
@@ -85,6 +85,7 @@ adapters/
   cursor/         Cursor 규칙 및 탐색 경로 안내
   claude/         Claude Code 탐색 안내
   codex/          Codex 탐색 안내
+integrations/     재사용 가능한 서비스·발행 엔진 계약
 evals/            합성 라우팅 및 안전성 사례
 scripts/          설치, 감사, 검증 명령
 tests/            개인정보 경계 및 이벤트 파서 테스트
@@ -133,6 +134,25 @@ Cursor와 Codex는 의도적으로 `.agents/skills`를 공유합니다. 현재
 
 기존 개인 환경에 적용하기 전에는
 [상세 적용 가이드](docs/adoption.ko.md)를 먼저 읽어주세요.
+
+## 빈 개인 환경 다시 만들기
+
+설치기는 프로젝트나 기존 사용자 환경에 스킬을 연결합니다. 부트스트랩 명령은
+새 기기나 비어 있는 사용자 환경에서 Codex 작업 기반을 다시 만들 때
+사용합니다. 사용자 규칙, 공용 스킬, 로컬 환경 프로필을 준비합니다.
+
+```bash
+./scripts/bootstrap.sh --target codex
+
+# 모든 PLAN 항목을 확인한 뒤 적용합니다.
+./scripts/bootstrap.sh --target codex --apply
+```
+
+기존 `~/.codex/AGENTS.md`나 스킬은 덮어쓰지 않고 충돌로 중단합니다. 기기별
+경로와 서비스 별칭은 공개 저장소 밖의 `~/.agent-garden/profile.ini`에
+입력합니다. 인증 정보, 세션, connector 로그인, `~/.codex/config.toml`, 회사
+전용 규칙은 의도적으로 복구 대상에서 제외합니다. 자세한 내용은
+[환경 부트스트랩 가이드](docs/environment-bootstrap.ko.md)를 참고하세요.
 
 ## 내가 반복하는 업무 발견하기
 

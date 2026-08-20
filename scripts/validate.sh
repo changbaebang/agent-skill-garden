@@ -10,7 +10,8 @@ python3 "$REPO_ROOT/scripts/context_report.py" --check
 
 if grep -rnE 'TODO|PLACEHOLDER' \
   "$REPO_ROOT/core" "$REPO_ROOT/docs" "$REPO_ROOT/adapters" \
-  "$REPO_ROOT/examples" "$REPO_ROOT/evals" "$REPO_ROOT"/README*.md; then
+  "$REPO_ROOT/examples" "$REPO_ROOT/evals" "$REPO_ROOT/integrations" \
+  "$REPO_ROOT"/README*.md; then
   echo "Unresolved placeholder found." >&2
   exit 1
 fi

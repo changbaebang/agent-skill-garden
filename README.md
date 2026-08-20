@@ -39,7 +39,7 @@ requests may deserve a new or better skill.
 
 ## What you can copy
 
-- Twenty portable workflows for intake, execution, review, verification,
+- Twenty-one portable workflows for intake, execution, review, verification,
   repository lifecycle, knowledge work, closeout, and skill maintenance.
 - Shared policies for skill-first routing, explicit change authority, and
   read-back verification.
@@ -84,6 +84,7 @@ adapters/
   cursor/         Cursor rule and discovery guidance
   claude/         Claude Code discovery guidance
   codex/          Codex discovery guidance
+integrations/     reusable service and publication-engine contracts
 evals/            synthetic routing and safety cases
 scripts/          installation, audit, and validation commands
 tests/            privacy and event-parser tests
@@ -132,6 +133,27 @@ Cursor rules.
 
 Read the full [adoption guide](docs/adoption.md) before installing into an
 existing user configuration.
+
+## Rebuild a fresh personal environment
+
+The installer links skills into a project or an existing user environment. The
+bootstrap command is for a new machine or an empty user environment. It
+prepares the portable part of a Codex setup: user guidance, shared skills, and a
+local environment profile.
+
+```bash
+./scripts/bootstrap.sh --target codex
+
+# Review every PLAN line, then apply it.
+./scripts/bootstrap.sh --target codex --apply
+```
+
+The command refuses to overwrite an existing `~/.codex/AGENTS.md` or skill.
+Machine-specific paths and service aliases go in
+`~/.agent-garden/profile.ini`, which is not part of this public repository.
+Credentials, sessions, connector login, `~/.codex/config.toml`, and private
+organization rules are deliberately outside the bootstrap boundary. See the
+[environment bootstrap guide](docs/environment-bootstrap.md).
 
 ## Discover your repeated work locally
 

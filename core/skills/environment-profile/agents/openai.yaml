@@ -1,0 +1,4 @@
+interface:
+  display_name: "Environment Profile"
+  short_description: "Initialize and verify portable environment mappings"
+  default_prompt: "Use $environment-profile to initialize or verify this environment profile."
