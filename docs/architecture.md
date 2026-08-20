@@ -18,6 +18,8 @@ core/skills + core/policies
           |
           +-- adapters/codex  --> .agents/skills
           |
+          +-- integrations + local profile --> environment-specific facts
+          |
           +-- evals + local evidence --> keep / tune / merge / retire
 ```
 
@@ -35,6 +37,17 @@ They are kept out of individual skills to avoid repetition.
 Adapters define discovery paths and always-on guidance. They do not fork skill
 bodies. The installer links the same skill directory into Claude Code and the
 shared `.agents/skills` root used by Codex and Cursor.
+
+## Environment layer
+
+`integrations` describes reusable service or engine behavior. A local
+environment profile supplies actual paths, repositories, branches, URLs,
+workspaces, and aliases. The public template keeps every integration disabled,
+and the profile never contains credentials or mutation authority.
+
+`scripts/bootstrap.sh` combines one adapter, canonical skill links, and a local
+profile on a new machine. It is a conservative initializer, not an automatic
+merge or a complete backup of host state.
 
 ## Promotion, not synchronization
 

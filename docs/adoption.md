@@ -6,6 +6,11 @@ Adopt the garden incrementally. The safe path is to validate a clone, install a
 small set into a disposable project, test routing, and only then consider a
 user-wide installation.
 
+For a new machine or an empty user environment, use the separate
+[environment bootstrap guide](environment-bootstrap.md). Bootstrap prepares a
+portable baseline; this guide remains the safer path for merging into an
+existing configuration.
+
 ## 1. Clone and validate
 
 ```bash

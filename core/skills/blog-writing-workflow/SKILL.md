@@ -16,10 +16,13 @@ Do not silently advance from one mode to the next.
 
 ## Initialize
 
-1. Confirm the blog source and the local profile destination. Prefer a local
+1. Resolve an environment profile when available. Use its enabled
+   `integration.blog` section for repository, drafts, engine, branch, base URL,
+   and verification mechanisms. These are site facts, not writing-style rules.
+2. Confirm the blog source and the local writing-profile destination. Prefer a local
    source repository because it exposes frontmatter, templates, and publication
    paths. A public URL can establish visible style only.
-2. For a local Markdown source, run:
+3. For a local Markdown source, run:
 
    ```bash
    python3 scripts/blog_inventory.py BLOG_SOURCE \
@@ -27,13 +30,13 @@ Do not silently advance from one mode to the next.
      --sample-size 12
    ```
 
-3. Inspect the site configuration, templates, inventory, and a bounded sample
+4. Inspect the site configuration, templates, inventory, and a bounded sample
    containing both recent and structurally varied posts. Do not treat one post
    as the author's complete voice.
-4. Create `.agent-blog/blog-profile.md` using
+5. Create `.agent-blog/blog-profile.md` using
    [references/profile-contract.md](references/profile-contract.md). Separate
    measured observations, semantic inferences, and explicit author preferences.
-5. Show the profile summary and uncertain inferences to the user. Apply their
+6. Show the profile summary and uncertain inferences to the user. Apply their
    corrections before using it as a writing contract.
 
 The inventory emits statistics and relative sample paths, never article body
@@ -71,7 +74,8 @@ pass.
 Publication is an external side effect and requires an explicit request in the
 current conversation.
 
-1. Re-read the final draft, profile, destination, and current repository state.
+1. Re-read the final draft, writing profile, selected environment profile,
+   destination, and current repository state.
 2. Preview the exact file, metadata, branch, commit, command, or API action that
    will publish the post.
 3. Execute only the configured publication mechanism. Do not infer credentials,
