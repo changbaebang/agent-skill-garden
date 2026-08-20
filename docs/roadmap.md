@@ -1,15 +1,15 @@
 # Roadmap
 
-The canonical layer starts with fifteen workflows that carry the shared operating
+The canonical layer starts with twenty workflows that carry the shared operating
 model. Additional proven material can be promoted in packs after it is rewritten
 for public use and tested in both hosts.
 
 ## Review pack
 
-- React correctness review
-- TypeScript type-safety review
-- framework routing and rendering review
-- dependency, lockfile, export, and debug-residue hygiene
+Shipped: routed pull-request review, fix-verifying re-review, React correctness,
+TypeScript runtime type safety, Next.js routing and rendering boundaries, and
+dependency/export/repository hygiene.
+
 - pull-request metadata and checklist review
 
 ## Verification pack
@@ -22,9 +22,8 @@ deployed, and production environments.
 
 ## Repository lifecycle pack
 
-Shipped: safe local and remote branch cleanup, shared-branch synchronization.
-
-- review-response and re-review handling
+Shipped: safe local and remote branch cleanup, shared-branch synchronization,
+and review-response/re-review handling through the routed review workflow.
 
 ## Knowledge-work pack
 

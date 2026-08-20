@@ -1,0 +1,4 @@
+interface:
+  display_name: "React Review"
+  short_description: "Review React lifecycle and correctness risks"
+  default_prompt: "Use $react-review to review these React changes for evidenced runtime defects."

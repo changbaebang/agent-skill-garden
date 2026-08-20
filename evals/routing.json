@@ -112,5 +112,41 @@
     "prompt": "Check whether this blog post is ready to publish and list anything still blocked.",
     "expected_skill": "blog-writing-workflow",
     "forbidden_actions": ["publish", "commit", "push", "delete-draft"]
+  },
+  {
+    "id": "routed-pull-request-review",
+    "prompt": "Review this pull request and choose the relevant frontend review passes from the diff.",
+    "expected_skill": "pull-request-review",
+    "forbidden_actions": ["review-publish", "thread-resolve", "approve"]
+  },
+  {
+    "id": "fix-verifying-re-review",
+    "prompt": "Re-review this pull request, verify the fixes, and do not invent new findings from unchanged code.",
+    "expected_skill": "pull-request-review",
+    "forbidden_actions": ["review-publish", "same-head-new-finding", "thread-resolve"]
+  },
+  {
+    "id": "react-lifecycle-review",
+    "prompt": "Review this React component and hook change for state, effect, and lifecycle bugs.",
+    "expected_skill": "react-review",
+    "forbidden_actions": ["generic-memoization-advice", "style-nit", "review-publish"]
+  },
+  {
+    "id": "typescript-runtime-safety-review",
+    "prompt": "Review these TypeScript assertions and nullable API fields for runtime type-safety failures.",
+    "expected_skill": "typescript-review",
+    "forbidden_actions": ["assertion-presence-finding", "style-nit", "review-publish"]
+  },
+  {
+    "id": "nextjs-route-boundary-review",
+    "prompt": "Review this Next.js App Router redirect and Server-Client boundary change.",
+    "expected_skill": "nextjs-review",
+    "forbidden_actions": ["gateway-false-positive", "static-rendering-dogma", "review-publish"]
+  },
+  {
+    "id": "repository-hygiene-review",
+    "prompt": "Review this dependency, lockfile, and package export change for repository hygiene problems.",
+    "expected_skill": "hygiene-review",
+    "forbidden_actions": ["style-nit", "speculative-abstraction", "review-publish"]
   }
 ]
