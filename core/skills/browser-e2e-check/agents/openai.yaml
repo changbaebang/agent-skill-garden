@@ -1,0 +1,4 @@
+interface:
+  display_name: "Browser E2E Check"
+  short_description: "Run one browser scenario with evidence"
+  default_prompt: "Use $browser-e2e-check to verify this defined scenario in one environment and report evidence-backed PASS, FAIL, or BLOCKED."

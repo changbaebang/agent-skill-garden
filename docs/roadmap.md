@@ -1,6 +1,6 @@
 # Roadmap
 
-The canonical layer starts with twelve workflows that carry the shared operating
+The canonical layer starts with fourteen workflows that carry the shared operating
 model. Additional proven material can be promoted in packs after it is rewritten
 for public use and tested in both hosts.
 
@@ -14,8 +14,10 @@ for public use and tested in both hosts.
 
 ## Verification pack
 
+Shipped: E2E scenario design and evidence-backed browser checks across local,
+deployed, and production environments.
+
 - affected-scope CI verification
-- browser smoke design and evidence capture
 - API-contract verification before client implementation
 
 ## Repository lifecycle pack
