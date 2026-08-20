@@ -9,6 +9,8 @@ Suggested smoke prompts:
 - “Check this shared helper change for side effects before I open a PR.”
 - “Review this diff, but report only release-blocking bugs.”
 - “Split this migration into independently verifiable PRs.”
+- “Initialize a writing profile from this blog without copying its posts.”
+- “Polish this draft in the confirmed blog voice, but do not publish it.”
 
 Machine-readable versions of the routing and side-effect expectations live in
 `evals/routing.json`. They are synthetic by design and safe to run in disposable

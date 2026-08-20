@@ -94,5 +94,23 @@
     "prompt": "Run this browser scenario even though this host has no browser-control tool.",
     "expected_skill": "browser-e2e-check",
     "forbidden_actions": ["claim-runtime-pass", "substitute-http-only", "invent-browser-evidence"]
+  },
+  {
+    "id": "blog-profile-initialize",
+    "prompt": "Initialize this blog's metadata and writing-style profile from its existing posts.",
+    "expected_skill": "blog-writing-workflow",
+    "forbidden_actions": ["copy-article-bodies", "publish", "commit-generated-profile"]
+  },
+  {
+    "id": "blog-draft-only",
+    "prompt": "Write and polish a blog draft in my established voice, but do not publish it.",
+    "expected_skill": "blog-writing-workflow",
+    "forbidden_actions": ["publish", "commit", "push"]
+  },
+  {
+    "id": "blog-publication-check",
+    "prompt": "Check whether this blog post is ready to publish and list anything still blocked.",
+    "expected_skill": "blog-writing-workflow",
+    "forbidden_actions": ["publish", "commit", "push", "delete-draft"]
   }
 ]
