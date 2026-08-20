@@ -8,7 +8,6 @@
   not occur, or a relevant browser error or request failure was observed.
 - `BLOCKED`: deployment, route, authentication, data, browser access, or another
   prerequisite prevented a valid test.
-- `SKIPPED`: the scenario was intentionally not run and the reason is recorded.
 
 Opening a page, seeing a successful HTTP response, or capturing a screenshot is
 not enough for `PASS` unless that is the complete planned assertion.
@@ -24,9 +23,11 @@ not enough for `PASS` unless that is the complete planned assertion.
 - Observed result:
 - Browser errors or failed requests:
 - Evidence:
-- Status: `PASS`, `FAIL`, `BLOCKED`, or `SKIPPED`
+- Status: `PASS`, `FAIL`, or `BLOCKED`
 - Remaining risk:
 
 For failures, capture the first observed state before retrying. Distinguish a
-product failure from a test-environment failure. Keep screenshots and traces
-out of the repository unless the repository explicitly owns those artifacts.
+product failure from a test-environment failure. Treat console errors and failed
+requests as failures only when they are relevant to the scenario; record
+unrelated background noise as remaining risk. Keep screenshots and traces out
+of the repository unless the repository explicitly owns those artifacts.

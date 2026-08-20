@@ -27,8 +27,11 @@ Turn a change into a small set of executable user journeys.
 7. Mark missing deployment, credentials, data, or environment facts as blockers
    instead of inventing them.
 
-Do not count opening a page as an end-to-end scenario. At least one meaningful
-interaction and assertion must connect the entry point to the changed behavior.
+Do not count opening a page as an end-to-end scenario unless the changed risk is
+the initial render, hydration, redirect, fatal page error, or another route-load
+behavior. In that case, make the visible or browser-observable route-load state
+the explicit assertion. Otherwise require at least one meaningful interaction
+and assertion that connect the entry point to the changed behavior.
 
 Use [references/test-plan.md](references/test-plan.md) for the output contract.
 Hand the accepted plan to `browser-e2e-check` for execution.

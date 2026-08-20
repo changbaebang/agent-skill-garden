@@ -10,6 +10,8 @@ Choose one mode for the entire run.
 
 ## Readiness checklist
 
+- Confirm that the available browser-control capability supports the required
+  navigation, interaction, console, and network evidence.
 - Name the environment and target URL.
 - Record the expected branch, commit, build, or release identifier when known.
 - Confirm route behavior, including redirects and rewrites.
@@ -20,4 +22,6 @@ Choose one mode for the entire run.
 If deployment or revision identity cannot be proven, report `BLOCKED` rather
 than testing a possibly stale build. If the browser requires a secret or human
 verification step, pause for the user; never request that the secret be pasted
-into the conversation.
+into the conversation. If the required browser evidence cannot be collected,
+report `BLOCKED` and name the missing capability instead of substituting an HTTP
+request, screenshot, or source-code inference.
