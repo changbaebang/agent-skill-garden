@@ -1,0 +1,4 @@
+interface:
+  display_name: "E2E Test Design"
+  short_description: "Turn a change into executable browser journeys"
+  default_prompt: "Use $e2e-test-design to trace the changed behavior to routes, preconditions, actions, assertions, and evidence before browser execution."

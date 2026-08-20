@@ -27,11 +27,11 @@ jobs:
         run: |
           mkdir -p work/smoke-project
           ./scripts/install.sh --target all --scope project --root work/smoke-project --apply
-          test "$(find work/smoke-project/.claude/skills -type l | wc -l)" -eq 12
-          test "$(find work/smoke-project/.agents/skills -type l | wc -l)" -eq 12
+          test "$(find work/smoke-project/.claude/skills -type l | wc -l)" -eq 14
+          test "$(find work/smoke-project/.agents/skills -type l | wc -l)" -eq 14
           mkdir -p work/cursor-project
           ./scripts/install.sh --target cursor --scope project --root work/cursor-project --apply
-          test "$(find work/cursor-project/.agents/skills -type l | wc -l)" -eq 12
+          test "$(find work/cursor-project/.agents/skills -type l | wc -l)" -eq 14
           test ! -e work/cursor-project/.cursor/skills
           mkdir -p work/small-project
           ./scripts/install.sh --target codex --scope project --root work/small-project \

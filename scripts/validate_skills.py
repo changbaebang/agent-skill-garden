@@ -12,6 +12,7 @@ def fail(message: str) -> None:
 
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
+    resolved_root = root.resolve()
     skills_root = root / "core" / "skills"
     errors = 0
     skills = sorted(path for path in skills_root.iterdir() if path.is_dir())
@@ -66,6 +67,18 @@ def main() -> int:
         if len(text.splitlines()) > 500:
             fail(f"{skill.name}: SKILL.md exceeds 500 lines")
             errors += 1
+
+        for target in re.findall(r"\[[^\]]+\]\(([^)]+)\)", text):
+            if target.startswith(("#", "/", "http://", "https://", "mailto:")):
+                continue
+            relative_target = target.split("#", 1)[0]
+            resolved_target = (skill / relative_target).resolve()
+            if relative_target and (
+                resolved_root not in resolved_target.parents
+                or not resolved_target.is_file()
+            ):
+                fail(f"{skill.name}: broken relative link {target}")
+                errors += 1
 
     if errors:
         return 1
