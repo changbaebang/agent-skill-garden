@@ -1,0 +1,4 @@
+interface:
+  display_name: "Pull Request Review"
+  short_description: "Route and verify evidence-based review passes"
+  default_prompt: "Use $pull-request-review to select the relevant review passes and review this change."

@@ -39,7 +39,7 @@ requests may deserve a new or better skill.
 
 ## What you can copy
 
-- Fifteen portable workflows for intake, execution, review, verification,
+- Twenty portable workflows for intake, execution, review, verification,
   repository lifecycle, knowledge work, closeout, and skill maintenance.
 - Shared policies for skill-first routing, explicit change authority, and
   read-back verification.
@@ -50,6 +50,13 @@ requests may deserve a new or better skill.
 - A local-only usage audit that emits aggregates, not prompt text.
 - A promotion process that authors public-safe knowledge at the source instead
   of sanitizing a private repository after the fact.
+
+The review workflows use a routed model: `pull-request-review` inspects the
+change first, always applies the release-blocker gate, and selects React,
+TypeScript, Next.js, hygiene, and side-effect passes only when the diff provides
+their signals. Re-review compares heads and verifies fixes instead of producing
+new comments from unchanged code. See
+[`docs/review-workflow.md`](docs/review-workflow.md).
 
 ## Why this is a portfolio project
 

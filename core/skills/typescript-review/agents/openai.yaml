@@ -1,0 +1,4 @@
+interface:
+  display_name: "TypeScript Review"
+  short_description: "Trace runtime risks hidden by unsafe types"
+  default_prompt: "Use $typescript-review to review these TypeScript changes for runtime-relevant type-safety failures."

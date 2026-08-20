@@ -43,7 +43,7 @@ Skills로 만들고, 여러 도구에서 같은 원칙을 유지하며, 선택·
 
 ## 복제해서 쓸 수 있는 것
 
-- intake, 실행, 리뷰, 검증, 저장소 라이프사이클, 지식 작업, closeout, 스킬 유지보수를 다루는 15개의 범용 스킬
+- intake, 실행, 리뷰, 검증, 저장소 라이프사이클, 지식 작업, closeout, 스킬 유지보수를 다루는 20개의 범용 스킬
 - skill-first 라우팅, 변경 권한 분리, 변경 후 read-back 검증 정책
 - 하나의 스킬 원본을 공유하는 Cursor, Claude Code, Codex adapter
 - 기존 파일을 덮어쓰지 않고 먼저 계획을 보여주는 설치 스크립트
@@ -51,6 +51,13 @@ Skills로 만들고, 여러 도구에서 같은 원칙을 유지하며, 선택·
 - 원문 프롬프트를 출력하지 않는 로컬 사용 감사
 - 비공개 저장소를 사후 치환하는 대신 범용 지식을 처음부터 공개판으로
   작성하는 promotion 절차
+
+리뷰 워크플로는 라우팅 방식으로 동작합니다. `pull-request-review`가 먼저
+변경을 읽고 release blocker 검사를 항상 적용한 뒤, diff 신호에 따라 React,
+TypeScript, Next.js, hygiene, side-effect 패스만 선택합니다. 재리뷰에서는
+변경되지 않은 코드에서 새 지적을 만들지 않고 이전 head와 현재 head를 비교해
+실제 수정 여부를 확인합니다. 자세한 내용은
+[`docs/review-workflow.ko.md`](docs/review-workflow.ko.md)를 참고하세요.
 
 ## 포트폴리오로 보여주는 것
 

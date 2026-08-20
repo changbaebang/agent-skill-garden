@@ -1,0 +1,4 @@
+interface:
+  display_name: "Next.js Review"
+  short_description: "Review Next.js rendering and routing boundaries"
+  default_prompt: "Use $nextjs-review to classify and review these Next.js changes."

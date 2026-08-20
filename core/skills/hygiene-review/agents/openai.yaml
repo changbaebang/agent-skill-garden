@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hygiene Review"
+  short_description: "Review dependencies, exports, and repository drift"
+  default_prompt: "Use $hygiene-review to inspect this change for concrete repository hygiene problems."
