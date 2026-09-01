@@ -354,7 +354,52 @@ class CliTests(unittest.TestCase):
         self.assertIn("verdict=finished", lines)
         self.assertNotIn("verdict=new-finding", lines)
 
-    def test_only_from_requires_a_round_mark(self) -> None:
+    def test_only_from_still_reports_another_reviewer_finding(self) -> None:
+        # --only-from names whose answer is awaited. Narrowing the evidence too
+        # would finish the loop while a fresh finding sat unanswered: a
+        # top-level commented review opens no thread, so unresolved_threads and
+        # an already-approved decision cannot catch it either.
+        lines = self.run_cli(
+            {
+                "reviews": [
+                    review("awaited", "APPROVED", "2026-01-01T00:01:00Z"),
+                    review(
+                        "bystander",
+                        "COMMENTED",
+                        "2026-01-01T00:02:00Z",
+                        body="this leaks a handle",
+                    ),
+                ],
+                "comments": [],
+                "review_decision": "APPROVED",
+                "unresolved_threads": 0,
+            },
+            "--since",
+            "2026-01-01T00:00:00Z",
+            "--only-from",
+            "awaited",
+        )
+        self.assertIn("verdict=new-finding", lines)
+        self.assertIn("review bystander COMMENTED", lines)
+
+    def test_retired_answered_flag_is_rejected(self) -> None:
+        # The key used to decide the verdict. Ignoring it silently would flip
+        # awaiting-reviewer into finished on an unchanged document.
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            with self.assertRaises(SystemExit):
+                self.run_cli(
+                    {
+                        "reviews": [],
+                        "comments": [],
+                        "review_decision": "APPROVED",
+                        "unresolved_threads": 0,
+                        "awaited_reviewer_answered": False,
+                    }
+                )
+        self.assertIn("awaited_reviewer_answered is no longer read", stderr.getvalue())
+
+    def test_only_from_requires_a_since_mark(self) -> None:
         stderr = io.StringIO()
         with redirect_stderr(stderr):
             with self.assertRaises(SystemExit):

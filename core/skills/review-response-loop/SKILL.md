@@ -51,6 +51,11 @@ Prefer the platform's own re-request. Where a reviewer only wakes on a chat
 mention, that mention is an integration detail and belongs in the environment
 profile, not in this workflow.
 
+Record the timestamp of every re-request as it is made. Those timestamps, plus
+the initial request, are the round marks the next round is read against. Nothing
+else recovers where a round started, and without them a repeated location cannot
+be told apart from convergence.
+
 If a re-requested reviewer stays silent past a short deadline, request once more.
 After a second silence, report it: the reviewer may be unavailable or an
 automation may be down.
@@ -65,6 +70,7 @@ Classify the incoming round first. The response differs.
 | A point closed by agreement is reopened | Round-trip |
 | The same topic arrives in the **opposite** direction | Round-trip |
 | Several reviewers hit one place in the **same** round | Convergence |
+| One place repeated with no round evidence to separate the two | Repeated |
 
 Round-trip means the point-by-point answers are not landing. Convergence means
 that place is genuinely weak. Both get the same treatment: stop answering
@@ -72,7 +78,9 @@ thread by thread, publish one comment covering the whole topic, and point the
 threads at it.
 
 Counting `path:line` frequency alone cannot separate the two. Compare authors
-inside explicit rounds bounded by request timestamps. See
+inside explicit rounds bounded by request timestamps. `repeated` is neither
+reading: the round marks were missing, or one reviewer wrote twice inside one
+round. Read the exchange rather than treating it as a round-trip. See
 [references/round-trips.md](references/round-trips.md).
 
 ## Judge each finding

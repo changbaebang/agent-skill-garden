@@ -122,11 +122,11 @@ def loop_verdict(
 ) -> str:
     """Decide whether the loop may stop.
 
-    ``awaited_reviewer_answered`` is ``None`` when no reviewer was re-requested.
-    An approval with no unresolved threads is *not* an ending while a
-    re-requested reviewer has still not answered: a reviewer who is not on the
-    requested list can hold an open comment while the decision already reads as
-    approved.
+    ``awaited_reviewer_answered`` comes from :func:`reviewer_answered` and is
+    ``None`` when no reviewer was re-requested. An approval with no unresolved
+    threads is *not* an ending while a re-requested reviewer has still not
+    answered: a reviewer who is not on the requested list can hold an open
+    comment while the decision already reads as approved.
     """
     if has_new_finding:
         return NEW_FINDING
@@ -206,11 +206,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         else Path(args.input).read_text(encoding="utf-8")
     )
     payload = json.loads(raw)
+    if "awaited_reviewer_answered" in payload:
+        parser.error(
+            "awaited_reviewer_answered is no longer read; pass --only-from "
+            "REVIEWER and let the helper derive the answer state"
+        )
 
     reviews = payload.get("reviews", [])
     comments = payload.get("comments", [])
 
-    activity = new_activity(reviews, comments, args.since, args.author, args.only_from)
+    # Judge the verdict on every reviewer's activity. ``--only-from`` narrows
+    # whose answer the loop is waiting for, not the evidence that a finding
+    # arrived: narrowing both reports "finished" while another reviewer's fresh
+    # finding sits unanswered in the same window.
+    activity = new_activity(reviews, comments, args.since, args.author)
     for item in activity:
         print(item.render())
 

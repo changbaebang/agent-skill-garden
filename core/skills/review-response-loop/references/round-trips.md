@@ -27,8 +27,14 @@ timestamp as explicit round marks, then compare:
 - The same place in more than one marked round is a round-trip, regardless of
   which reviewer raised it.
 - Distinct reviewers at the same place inside one marked round are convergence.
+- One reviewer writing twice at one place inside a single marked round is also
+  only `repeated`: it is one person elaborating, not a cycle and not agreement
+  between reviewers.
 - Without round evidence, report only `repeated` and inspect the exchange rather
   than guessing.
+
+Round marks come from the loop itself. Each time step 3 re-requests review, keep
+that timestamp; with the initial request they are the whole set.
 
 ## The response is the same
 

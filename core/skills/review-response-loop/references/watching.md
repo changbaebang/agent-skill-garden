@@ -30,9 +30,14 @@ The helper accepts raw review and inline-comment records plus current state:
 ```
 
 `round_marks` contains the initial request timestamp followed by every
-re-request timestamp. It lets the helper tell a later-round repeat from several
-reviewers converging inside one round. Without round evidence the helper reports
-`repeated` instead of guessing.
+re-request timestamp. Collect them as the loop runs: step 3 makes each
+re-request, so record the timestamp there. It lets the helper tell a later-round
+repeat from several reviewers converging inside one round. Without round
+evidence the helper reports `repeated` instead of guessing.
+
+`awaited_reviewer_answered` is not an input. An older document carrying that key
+is rejected rather than silently ignored, because the verdict it was written to
+produce would flip.
 
 Run it with the account whose writes must be excluded:
 
@@ -44,6 +49,11 @@ When waiting on a reviewer, add `--only-from REVIEWER`. `--since` is then
 required and must be the timestamp of that re-request. If no activity from that
 reviewer exists after the mark, the verdict is `awaiting-reviewer`; callers do
 not supply a separate answered flag.
+
+`--only-from` names whose answer is awaited. It does not narrow the evidence:
+activity from every reviewer is still reported, and a finding from any of them
+still outranks an approval. Narrowing both would report `finished` while someone
+else's fresh finding sat unanswered in the same window.
 
 ## Re-establishing the timestamp
 
