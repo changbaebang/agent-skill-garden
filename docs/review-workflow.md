@@ -72,6 +72,21 @@ The repository does not copy those prompts. It preserves the shared decisions:
 scope from the current diff, investigate context before judging, require a
 failure path, route specialized guidance by evidence, and verify fixes.
 
+## The author side
+
+`review-response-loop` runs the other half of the same conversation. Where the
+review workflow produces findings, the response loop settles them: it judges
+each finding against the current file, verifies an accepted fix, replies with
+the commit that made it, resolves the thread, re-requests review, and re-arms
+the watch.
+
+Two readings keep that loop from stalling. An approval is not an ending while a
+re-requested reviewer has not answered, because a reviewer outside the requested
+list can hold an open comment while the decision already reads as approved. And
+one place raised across rounds is a round-trip, while one place raised by
+several reviewers inside a single round is convergence. Both are answered with a
+single comment covering the whole topic rather than thread by thread.
+
 ## Public and local boundaries
 
 The canonical skills contain no company channels, ticket prefixes, branch

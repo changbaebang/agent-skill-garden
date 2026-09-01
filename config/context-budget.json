@@ -1,5 +1,5 @@
 {
-  "max_catalog_characters": 8000,
+  "max_catalog_characters": 9000,
   "max_single_description_characters": 1024,
   "max_single_skill_body_characters": 12000
 }
