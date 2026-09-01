@@ -129,9 +129,10 @@ answered.
 | Any unresolved thread or new finding | Not finished |
 | Only approvals arrived while threads remain | Not finished |
 
-While waiting on a specific reviewer, watch that reviewer alone. A watch that
-reacts to any activity is consumed by an unrelated approval and stops before the
-answer arrives.
+While waiting on a specific reviewer, keep collecting activity from every
+reviewer. Only that reviewer's activity satisfies the wait, but a finding from
+anyone remains evidence and keeps the loop open. An unrelated approval neither
+satisfies the wait nor hides another reviewer's finding.
 
 ## When rounds keep coming
 

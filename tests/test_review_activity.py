@@ -84,20 +84,33 @@ class NewActivityTests(unittest.TestCase):
             ["review other APPROVED", "comment other a/b.ts:12"],
         )
 
-    def test_only_from_ignores_an_unrelated_approval(self) -> None:
-        # A watch that stops on any activity is consumed by someone else's
-        # approval before the awaited reviewer answers.
+    def test_always_reports_activity_from_every_reviewer(self) -> None:
+        # Evidence collection must not be narrowed to the awaited reviewer.
+        # Otherwise another reviewer's finding can disappear from the verdict.
         found = REVIEW_ACTIVITY.new_activity(
             [
-                review("bystander", "APPROVED", "2026-01-01T00:02:00Z"),
-                review("awaited", "COMMENTED", "2026-01-01T00:04:00Z"),
+                review(
+                    "bystander",
+                    "COMMENTED",
+                    "2026-01-01T00:02:00Z",
+                    body="this leaks a handle",
+                ),
+                review("awaited", "APPROVED", "2026-01-01T00:04:00Z"),
             ],
             [],
             "2026-01-01T00:00:00Z",
             "author",
-            only_from="awaited",
         )
-        self.assertEqual([item.author for item in found], ["awaited"])
+        self.assertEqual([item.author for item in found], ["bystander", "awaited"])
+        self.assertEqual(
+            REVIEW_ACTIVITY.loop_verdict(
+                "APPROVED",
+                0,
+                REVIEW_ACTIVITY.reviewer_answered(found, "awaited"),
+                REVIEW_ACTIVITY.has_new_finding(found),
+            ),
+            REVIEW_ACTIVITY.NEW_FINDING,
+        )
 
     def test_missing_timestamp_is_treated_as_older(self) -> None:
         reviews = [{"user": {"login": "other"}, "state": "APPROVED"}]
@@ -143,7 +156,6 @@ class ActivityMeaningTests(unittest.TestCase):
             ],
             "2026-01-01T00:00:00Z",
             "author",
-            only_from="awaited",
         )
         self.assertTrue(REVIEW_ACTIVITY.reviewer_answered(activity, "awaited"))
         self.assertFalse(REVIEW_ACTIVITY.has_new_finding(activity))
@@ -323,7 +335,7 @@ class CliTests(unittest.TestCase):
             },
             "--since",
             "2026-01-01T00:00:00Z",
-            "--only-from",
+            "--awaiting-reviewer",
             "awaited",
         )
         self.assertIn("verdict=awaiting-reviewer", lines)
@@ -348,17 +360,17 @@ class CliTests(unittest.TestCase):
             },
             "--since",
             "2026-01-01T00:00:00Z",
-            "--only-from",
+            "--awaiting-reviewer",
             "awaited",
         )
         self.assertIn("verdict=finished", lines)
         self.assertNotIn("verdict=new-finding", lines)
 
-    def test_only_from_still_reports_another_reviewer_finding(self) -> None:
-        # --only-from names whose answer is awaited. Narrowing the evidence too
-        # would finish the loop while a fresh finding sat unanswered: a
-        # top-level commented review opens no thread, so unresolved_threads and
-        # an already-approved decision cannot catch it either.
+    def test_awaiting_reviewer_still_reports_another_reviewer_finding(self) -> None:
+        # --awaiting-reviewer names whose answer is awaited. Narrowing the
+        # evidence too would finish the loop while a fresh finding sat
+        # unanswered: a top-level commented review opens no thread, so
+        # unresolved_threads and an already-approved decision cannot catch it.
         lines = self.run_cli(
             {
                 "reviews": [
@@ -376,7 +388,7 @@ class CliTests(unittest.TestCase):
             },
             "--since",
             "2026-01-01T00:00:00Z",
-            "--only-from",
+            "--awaiting-reviewer",
             "awaited",
         )
         self.assertIn("verdict=new-finding", lines)
@@ -399,14 +411,23 @@ class CliTests(unittest.TestCase):
                 )
         self.assertIn("awaited_reviewer_answered is no longer read", stderr.getvalue())
 
-    def test_only_from_requires_a_since_mark(self) -> None:
+    def test_awaiting_reviewer_requires_a_since_mark(self) -> None:
         stderr = io.StringIO()
         with redirect_stderr(stderr):
             with self.assertRaises(SystemExit):
                 REVIEW_ACTIVITY.main(
-                    ["--input", "-", "--author", "author", "--only-from", "awaited"]
+                    [
+                        "--input",
+                        "-",
+                        "--author",
+                        "author",
+                        "--awaiting-reviewer",
+                        "awaited",
+                    ]
                 )
-        self.assertIn("--since is required with --only-from", stderr.getvalue())
+        self.assertIn(
+            "--since is required with --awaiting-reviewer", stderr.getvalue()
+        )
 
 
 if __name__ == "__main__":

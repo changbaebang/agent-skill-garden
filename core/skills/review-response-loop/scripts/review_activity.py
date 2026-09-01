@@ -56,19 +56,18 @@ def new_activity(
     comments: Iterable[dict],
     since: str | None,
     author: str,
-    only_from: str | None = None,
 ) -> list[Activity]:
-    """Collect review activity newer than ``since``, excluding the author.
+    """Collect every reviewer's activity newer than ``since``.
 
-    ``only_from`` narrows the result to one reviewer. While waiting on a
-    specific reviewer this keeps an unrelated approval from ending the wait.
+    The author is excluded, but callers cannot narrow the evidence to one
+    reviewer. A finding from anyone must remain visible while a specific
+    reviewer's answer is awaited.
     """
-    wanted = None if only_from is None else only_from
     found: list[Activity] = []
 
     for review in reviews:
         login = str(review.get("user", {}).get("login", ""))
-        if login == author or (wanted is not None and login != wanted):
+        if login == author:
             continue
         if not _later_than(review.get("submitted_at"), since):
             continue
@@ -86,7 +85,7 @@ def new_activity(
 
     for comment in comments:
         login = str(comment.get("user", {}).get("login", ""))
-        if login == author or (wanted is not None and login != wanted):
+        if login == author:
             continue
         if not _later_than(comment.get("created_at"), since):
             continue
@@ -102,11 +101,13 @@ def new_activity(
     return found
 
 
-def reviewer_answered(activity: Sequence[Activity], only_from: str | None) -> bool | None:
+def reviewer_answered(
+    activity: Sequence[Activity], awaited_reviewer: str | None
+) -> bool | None:
     """Return fail-closed answer state for a specifically awaited reviewer."""
-    if only_from is None:
+    if awaited_reviewer is None:
         return None
-    return any(item.author == only_from for item in activity)
+    return any(item.author == awaited_reviewer for item in activity)
 
 
 def has_new_finding(activity: Sequence[Activity]) -> bool:
@@ -195,10 +196,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--input", required=True, help="JSON document, or - for stdin")
     parser.add_argument("--author", required=True, help="account whose writes are excluded")
     parser.add_argument("--since", default=None, help="UTC ISO-8601 mark")
-    parser.add_argument("--only-from", default=None, help="limit to one reviewer")
+    parser.add_argument(
+        "--awaiting-reviewer",
+        default=None,
+        help="reviewer whose response is awaited (activity still includes everyone)",
+    )
     args = parser.parse_args(argv)
-    if args.only_from is not None and args.since is None:
-        parser.error("--since is required with --only-from")
+    if args.awaiting_reviewer is not None and args.since is None:
+        parser.error("--since is required with --awaiting-reviewer")
 
     raw = (
         sys.stdin.read()
@@ -208,17 +213,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     payload = json.loads(raw)
     if "awaited_reviewer_answered" in payload:
         parser.error(
-            "awaited_reviewer_answered is no longer read; pass --only-from "
+            "awaited_reviewer_answered is no longer read; pass --awaiting-reviewer "
             "REVIEWER and let the helper derive the answer state"
         )
 
     reviews = payload.get("reviews", [])
     comments = payload.get("comments", [])
 
-    # Judge the verdict on every reviewer's activity. ``--only-from`` narrows
-    # whose answer the loop is waiting for, not the evidence that a finding
-    # arrived: narrowing both reports "finished" while another reviewer's fresh
-    # finding sits unanswered in the same window.
+    # Judge the verdict on every reviewer's activity. ``--awaiting-reviewer``
+    # names whose answer the loop is waiting for, not the evidence that a
+    # finding arrived: narrowing both reports "finished" while another
+    # reviewer's fresh finding sits unanswered in the same window.
     activity = new_activity(reviews, comments, args.since, args.author)
     for item in activity:
         print(item.render())
@@ -226,7 +231,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     verdict = loop_verdict(
         payload.get("review_decision"),
         int(payload.get("unresolved_threads", 0)),
-        reviewer_answered(activity, args.only_from),
+        reviewer_answered(activity, args.awaiting_reviewer),
         has_new_finding=has_new_finding(activity),
     )
     print(f"verdict={verdict}")

@@ -45,15 +45,15 @@ Run it with the account whose writes must be excluded:
 python3 scripts/review_activity.py --input state.json --author AUTHOR --since MARK
 ```
 
-When waiting on a reviewer, add `--only-from REVIEWER`. `--since` is then
-required and must be the timestamp of that re-request. If no activity from that
-reviewer exists after the mark, the verdict is `awaiting-reviewer`; callers do
-not supply a separate answered flag.
+When waiting on a reviewer, add `--awaiting-reviewer REVIEWER`. `--since` is
+then required and must be the timestamp of that re-request. If no activity from
+that reviewer exists after the mark, the verdict is `awaiting-reviewer`; callers
+do not supply a separate answered flag.
 
-`--only-from` names whose answer is awaited. It does not narrow the evidence:
-activity from every reviewer is still reported, and a finding from any of them
-still outranks an approval. Narrowing both would report `finished` while someone
-else's fresh finding sat unanswered in the same window.
+`--awaiting-reviewer` names whose answer is awaited. It does not narrow the
+evidence: activity from every reviewer is still reported, and a finding from any
+of them still outranks an approval. Narrowing both would report `finished` while
+someone else's fresh finding sat unanswered in the same window.
 
 ## Re-establishing the timestamp
 
@@ -61,12 +61,13 @@ Build the watch input again each round instead of editing the previous one in
 place. A partial edit that silently fails leaves the old timestamp behind, and
 the next run re-reports activity that was already handled.
 
-## Narrow the watch while waiting on someone
+## Narrow the answer condition, not the evidence
 
-A watch that stops on any new activity is consumed by an unrelated approval.
-When a specific reviewer has been re-requested, filter to that reviewer and use
-a short window so silence surfaces as a prompt to ask again rather than as an
-indefinite wait.
+When a specific reviewer has been re-requested, only activity from that reviewer
+satisfies the wait. Keep collecting every reviewer's activity in the same
+window, though: an unrelated approval must not finish the wait, and another
+reviewer's finding must not disappear. Use a short window so silence surfaces as
+a prompt to ask again rather than as an indefinite wait.
 
 ## Excluding the author
 
