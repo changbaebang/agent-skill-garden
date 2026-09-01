@@ -47,6 +47,8 @@ requests may deserve a new or better skill.
 - A non-destructive installer that previews changes and never overwrites an
   existing skill.
 - Public-safety, structure, context-budget, unit, and synthetic-eval checks.
+- An author-side review loop that keeps a pull request moving until the
+  review state settles, without ever merging it.
 - A local-only usage audit that emits aggregates, not prompt text.
 - A promotion process that authors public-safe knowledge at the source instead
   of sanitizing a private repository after the fact.
@@ -57,6 +59,11 @@ TypeScript, Next.js, hygiene, and side-effect passes only when the diff provides
 their signals. Re-review compares heads and verifies fixes instead of producing
 new comments from unchanged code. See
 [`docs/review-workflow.md`](docs/review-workflow.md).
+
+`review-response-loop` is the author-side counterpart. It carries a pull request
+you opened from the first review to a settled outcome: judge each finding,
+verify the fix, reply with the commit, resolve the thread, re-request review,
+and re-arm the watch. It never merges.
 
 ## Why this is a portfolio project
 

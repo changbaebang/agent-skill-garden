@@ -13,6 +13,7 @@ setup. Those sources remain private and are not mirrored into this repository.
 | `critical-review` | high-confidence release-blocker filter |
 | `side-effect-check` | caller-to-consumer runtime tracing |
 | `pull-request-review` | diff-driven pass selection, thread reconciliation, and fix-verifying re-review |
+| `review-response-loop` | author-side review cycle: judge, verify, reply with the commit, re-request, re-arm |
 | `react-review` | concrete render, state, effect, hook, and lifecycle failure paths |
 | `typescript-review` | runtime risk hidden by assertions, nullability, or suppressed type errors |
 | `nextjs-review` | route-intent classification before rendering and navigation judgments |

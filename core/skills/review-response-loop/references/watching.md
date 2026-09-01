@@ -1,0 +1,91 @@
+# Watching for review activity
+
+A round begins when new review activity appears after a known point in time.
+Establishing that point, and re-establishing it every round, is the mechanical
+part of the loop.
+
+## What the watch reports
+
+`scripts/review_activity.py` takes review and comment records plus a timestamp
+and returns two things:
+
+- **New activity** since that timestamp, excluding the author's own writes.
+- **A verdict**: whether the loop is finished, waiting, or holding a new finding.
+
+Keep both. The activity list alone cannot tell a fresh approval apart from a
+fresh finding, and the verdict alone hides who acted.
+
+## Input contract
+
+The helper accepts raw review and inline-comment records plus current state:
+
+```json
+{
+  "reviews": [],
+  "comments": [],
+  "review_decision": "APPROVED",
+  "unresolved_threads": 0,
+  "round_marks": ["2026-01-01T00:00:00Z"]
+}
+```
+
+`round_marks` contains the initial request timestamp followed by every
+re-request timestamp. Collect them as the loop runs: step 3 makes each
+re-request, so record the timestamp there. It lets the helper tell a later-round
+repeat from several reviewers converging inside one round. Without round
+evidence the helper reports `repeated` instead of guessing.
+
+`awaited_reviewer_answered` is not an input. An older document carrying that key
+is rejected rather than silently ignored, because the verdict it was written to
+produce would flip.
+
+Run it with the account whose writes must be excluded:
+
+```bash
+python3 scripts/review_activity.py --input state.json --author AUTHOR --since MARK
+```
+
+When waiting on a reviewer, add `--awaiting-reviewer REVIEWER`. `--since` is
+then required and must be the timestamp of that re-request. If no activity from
+that reviewer exists after the mark, the verdict is `awaiting-reviewer`; callers
+do not supply a separate answered flag.
+
+`--awaiting-reviewer` names whose answer is awaited. It does not narrow the
+evidence: activity from every reviewer is still reported, and a finding from any
+of them still outranks an approval. Narrowing both would report `finished` while
+someone else's fresh finding sat unanswered in the same window.
+
+## Re-establishing the timestamp
+
+Build the watch input again each round instead of editing the previous one in
+place. A partial edit that silently fails leaves the old timestamp behind, and
+the next run re-reports activity that was already handled.
+
+## Narrow the answer condition, not the evidence
+
+When a specific reviewer has been re-requested, only activity from that reviewer
+satisfies the wait. Keep collecting every reviewer's activity in the same
+window, though: an unrelated approval must not finish the wait, and another
+reviewer's finding must not disappear. Use a short window so silence surfaces as
+a prompt to ask again rather than as an indefinite wait.
+
+## Excluding the author
+
+Filter the author's own reviews and comments by resolving the current account at
+run time. A hardcoded account is wrong for everyone else who installs the
+workflow: their own writes are not filtered, and the account that is filtered
+belongs to someone whose findings they need to see.
+
+Another agent may also write under the same account. Such writes are filtered
+together with the author's, so check the thread list directly from time to time.
+
+## Reading the data
+
+The two record sets answer different questions and both are needed.
+
+- Review submissions carry state: approved, changes requested, or commented.
+- Inline comments carry the file, line, and comment identifier a reply needs.
+- A root inline comment is a new finding. A reply is activity, but the current
+  unresolved-thread state decides whether the exchange is still open.
+- Thread resolution state is separate from both, and unresolved threads are the
+  only ones this round has to answer.
