@@ -26,6 +26,7 @@ round.
 - `reviewDecision` and the current requested reviewers.
 - Unresolved review threads and their root comment identifiers.
 - The reviewer whose response this round is waiting on, if any.
+- The initial request and re-request timestamps that bound the review rounds.
 
 `scripts/review_activity.py` turns that data into new-activity and verdict
 lines. See [references/watching.md](references/watching.md).
@@ -71,7 +72,7 @@ thread by thread, publish one comment covering the whole topic, and point the
 threads at it.
 
 Counting `path:line` frequency alone cannot separate the two. Compare authors
-and timestamps. See
+inside explicit rounds bounded by request timestamps. See
 [references/round-trips.md](references/round-trips.md).
 
 ## Judge each finding

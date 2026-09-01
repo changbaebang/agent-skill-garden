@@ -15,6 +15,36 @@ and returns two things:
 Keep both. The activity list alone cannot tell a fresh approval apart from a
 fresh finding, and the verdict alone hides who acted.
 
+## Input contract
+
+The helper accepts raw review and inline-comment records plus current state:
+
+```json
+{
+  "reviews": [],
+  "comments": [],
+  "review_decision": "APPROVED",
+  "unresolved_threads": 0,
+  "round_marks": ["2026-01-01T00:00:00Z"]
+}
+```
+
+`round_marks` contains the initial request timestamp followed by every
+re-request timestamp. It lets the helper tell a later-round repeat from several
+reviewers converging inside one round. Without round evidence the helper reports
+`repeated` instead of guessing.
+
+Run it with the account whose writes must be excluded:
+
+```bash
+python3 scripts/review_activity.py --input state.json --author AUTHOR --since MARK
+```
+
+When waiting on a reviewer, add `--only-from REVIEWER`. `--since` is then
+required and must be the timestamp of that re-request. If no activity from that
+reviewer exists after the mark, the verdict is `awaiting-reviewer`; callers do
+not supply a separate answered flag.
+
 ## Re-establishing the timestamp
 
 Build the watch input again each round instead of editing the previous one in
@@ -44,5 +74,7 @@ The two record sets answer different questions and both are needed.
 
 - Review submissions carry state: approved, changes requested, or commented.
 - Inline comments carry the file, line, and comment identifier a reply needs.
+- A root inline comment is a new finding. A reply is activity, but the current
+  unresolved-thread state decides whether the exchange is still open.
 - Thread resolution state is separate from both, and unresolved threads are the
   only ones this round has to answer.

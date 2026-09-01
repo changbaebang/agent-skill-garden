@@ -20,9 +20,15 @@ weak, and usually the strongest signal available in the whole review.
 
 ## Telling them apart
 
-Frequency alone cannot separate them. Compare authors and timestamps: distinct
-reviewers inside one round is convergence, the same place across rounds is a
-round-trip.
+Frequency and timestamps alone cannot separate them because elapsed time does
+not define where a round starts. Keep the initial request and every re-request
+timestamp as explicit round marks, then compare:
+
+- The same place in more than one marked round is a round-trip, regardless of
+  which reviewer raised it.
+- Distinct reviewers at the same place inside one marked round are convergence.
+- Without round evidence, report only `repeated` and inspect the exchange rather
+  than guessing.
 
 ## The response is the same
 

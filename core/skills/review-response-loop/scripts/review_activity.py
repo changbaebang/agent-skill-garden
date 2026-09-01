@@ -11,6 +11,7 @@ import argparse
 import json
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable, Sequence
 
 FINISHED = "finished"
@@ -25,6 +26,7 @@ class Activity:
     kind: str
     author: str
     detail: str
+    is_finding: bool = False
 
     def render(self) -> str:
         return f"{self.kind} {self.author} {self.detail}".rstrip()
@@ -39,6 +41,14 @@ def _later_than(timestamp: str | None, mark: str | None) -> bool:
     if not mark:
         return True
     return timestamp > mark
+
+
+def _comment_location(comment: dict) -> str:
+    """Prefer the original line when a review comment is outdated."""
+    line = comment.get("line")
+    if line is None:
+        line = comment.get("original_line", "")
+    return f"{comment.get('path', '')}:{line}".strip(":")
 
 
 def new_activity(
@@ -62,7 +72,17 @@ def new_activity(
             continue
         if not _later_than(review.get("submitted_at"), since):
             continue
-        found.append(Activity("review", login, str(review.get("state", ""))))
+        state = str(review.get("state") or "").upper()
+        body = str(review.get("body") or "").strip()
+        found.append(
+            Activity(
+                "review",
+                login,
+                state,
+                is_finding=state == "CHANGES_REQUESTED"
+                or (state == "COMMENTED" and bool(body)),
+            )
+        )
 
     for comment in comments:
         login = str(comment.get("user", {}).get("login", ""))
@@ -70,10 +90,28 @@ def new_activity(
             continue
         if not _later_than(comment.get("created_at"), since):
             continue
-        location = f"{comment.get('path', '')}:{comment.get('line', '')}".strip(":")
-        found.append(Activity("comment", login, location))
+        found.append(
+            Activity(
+                "comment",
+                login,
+                _comment_location(comment),
+                is_finding=comment.get("in_reply_to_id") is None,
+            )
+        )
 
     return found
+
+
+def reviewer_answered(activity: Sequence[Activity], only_from: str | None) -> bool | None:
+    """Return fail-closed answer state for a specifically awaited reviewer."""
+    if only_from is None:
+        return None
+    return any(item.author == only_from for item in activity)
+
+
+def has_new_finding(activity: Sequence[Activity]) -> bool:
+    """Distinguish new findings from approvals and replies to existing threads."""
+    return any(item.is_finding for item in activity)
 
 
 def loop_verdict(
@@ -101,7 +139,19 @@ def loop_verdict(
     return UNDECIDED
 
 
-def group_findings(comments: Sequence[dict], author: str) -> dict[str, list[dict]]:
+def _round_for(timestamp: str | None, round_marks: Sequence[str]) -> str | None:
+    """Return the latest request mark at or before an activity timestamp."""
+    if not timestamp:
+        return None
+    eligible = [mark for mark in round_marks if mark and mark <= timestamp]
+    return max(eligible, default=None)
+
+
+def group_findings(
+    comments: Sequence[dict],
+    author: str,
+    round_marks: Sequence[str] = (),
+) -> dict[str, list[dict]]:
     """Group reviewer comments by ``path:line``.
 
     Frequency alone cannot separate a round-trip from convergence, so each entry
@@ -110,23 +160,34 @@ def group_findings(comments: Sequence[dict], author: str) -> dict[str, list[dict
     grouped: dict[str, list[dict]] = {}
     for comment in comments:
         login = str(comment.get("user", {}).get("login", ""))
-        if login == author:
+        if login == author or comment.get("in_reply_to_id") is not None:
             continue
-        location = f"{comment.get('path', '')}:{comment.get('line', '')}".strip(":")
-        grouped.setdefault(location, []).append(
-            {"author": login, "at": comment.get("created_at", "")}
+        round_id = comment.get("round_id") or _round_for(
+            comment.get("created_at"), round_marks
+        )
+        grouped.setdefault(_comment_location(comment), []).append(
+            {
+                "author": login,
+                "at": comment.get("created_at", ""),
+                "round": round_id,
+            }
         )
     return grouped
 
 
 def classify_repetition(entries: Sequence[dict]) -> str:
-    """Label one location as a round-trip, convergence, or a single finding."""
+    """Label one location without guessing when round evidence is absent."""
     if len(entries) < 2:
         return "single"
+    rounds = [entry.get("round") for entry in entries]
+    if any(round_id is None for round_id in rounds):
+        return "repeated"
+    if len(set(rounds)) > 1:
+        return "round-trip"
     authors = {entry.get("author", "") for entry in entries}
     if len(authors) > 1:
         return "convergence"
-    return "round-trip"
+    return "repeated"
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -136,8 +197,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--since", default=None, help="UTC ISO-8601 mark")
     parser.add_argument("--only-from", default=None, help="limit to one reviewer")
     args = parser.parse_args(argv)
+    if args.only_from is not None and args.since is None:
+        parser.error("--since is required with --only-from")
 
-    raw = sys.stdin.read() if args.input == "-" else open(args.input, encoding="utf-8").read()
+    raw = (
+        sys.stdin.read()
+        if args.input == "-"
+        else Path(args.input).read_text(encoding="utf-8")
+    )
     payload = json.loads(raw)
 
     reviews = payload.get("reviews", [])
@@ -150,12 +217,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     verdict = loop_verdict(
         payload.get("review_decision"),
         int(payload.get("unresolved_threads", 0)),
-        payload.get("awaited_reviewer_answered"),
-        has_new_finding=any(item.kind == "comment" for item in activity),
+        reviewer_answered(activity, args.only_from),
+        has_new_finding=has_new_finding(activity),
     )
     print(f"verdict={verdict}")
 
-    for location, entries in sorted(group_findings(comments, args.author).items()):
+    round_marks = payload.get("round_marks", [])
+    for location, entries in sorted(
+        group_findings(comments, args.author, round_marks).items()
+    ):
         label = classify_repetition(entries)
         if label != "single":
             print(f"{label} {location} ({len(entries)})")
