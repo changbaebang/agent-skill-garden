@@ -5,6 +5,11 @@ updates:
     schedule:
       interval: weekly
       day: monday
-    # Wait a week before proposing a new version: compromised releases are usually pulled within hours.
+    # Wait 30 days before proposing a new version. Compromised releases are usually pulled within
+    # hours, and some corporate proxies refuse packages younger than a few weeks. Security updates
+    # are not delayed by this.
     cooldown:
-      default-days: 7
+      default-days: 30
+    groups:
+      github-actions:
+        patterns: ['*']
