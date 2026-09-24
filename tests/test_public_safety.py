@@ -92,6 +92,16 @@ class PublicSafetyTests(unittest.TestCase):
         shutil.rmtree(self.root / ".git")
         self.assert_scanners(False, "Cannot enumerate repository files")
 
+    def test_zero_eligible_files_does_not_pass(self):
+        self.write("private.txt")
+        self.write(".gitignore", "*\n")
+        self.assert_scanners(False, "No eligible repository files")
+
+    def test_only_exempt_configuration_does_not_pass(self):
+        self.write(".gitignore", "*\n")
+        self.git("add", "-f", "config/forbidden-patterns.txt")
+        self.assert_scanners(False, "No eligible repository files")
+
     def test_worktree_git_pointer_is_not_scanned(self):
         self.git("add", ".")
         self.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",

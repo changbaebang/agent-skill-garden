@@ -17,7 +17,7 @@ SPEC = importlib.util.spec_from_file_location("skill_eval", ROOT / "scripts/skil
 assert SPEC and SPEC.loader
 EVAL = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(EVAL)
-SUITE = ROOT / "evals/critical-review.json"
+SUITE = ROOT / "evals/suites/critical-review.json"
 
 
 class SkillEvaluationTests(unittest.TestCase):
@@ -49,7 +49,13 @@ class SkillEvaluationTests(unittest.TestCase):
 
     def capture(self, name="before", extra=()):
         path = self.root / f"{name}.json"
-        code = self.cli("run", "--suite", self.suite, "--skill", "none", "--label", name,
+        skill = "none"
+        if name != "before":
+            folder = self.root / "comparison-skill"
+            folder.mkdir(exist_ok=True)
+            (folder / "SKILL.md").write_text("Use evidence for each finding.")
+            skill = str(folder)
+        code = self.cli("run", "--suite", self.suite, "--skill", skill, "--label", name,
                         "--model", "scripted", "--environment", "test-fixture-v1", "--synthetic",
                         "--split", "all", "--repeat", "1", "--out", path, *extra,
                         "--", sys.executable, self.runner)
@@ -109,7 +115,7 @@ class SkillEvaluationTests(unittest.TestCase):
     def test_compatibility_rejects_environment_suite_runner_and_model_drift(self):
         _, before = self.capture()
         _, after = self.capture("after")
-        for field in ("harness_sha256", "suite_sha256", "model", "environment", "runner_identity", "repeat", "kind", "split"):
+        for field in ("harness_sha256", "selected_suite_sha256", "model", "environment", "runner_identity", "repeat", "kind", "split"):
             candidate = dict(after, **{field: "changed"})
             with self.subTest(field=field), self.assertRaisesRegex(ValueError, field):
                 EVAL.compare(before, candidate, EVAL.judgments(before, None),

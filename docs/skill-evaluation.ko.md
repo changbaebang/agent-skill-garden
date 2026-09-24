@@ -14,21 +14,32 @@ Garden Eval은 **이 스킬 변경을 유지할 근거가 있는가**를 확인�
 ## 첫 실험: critical-review
 
 처음부터 공개용으로 작성한 합성 코드 사례 10개를 제공합니다.
+검증된 벤치마크가 아닌 작은 예제 모음입니다. 입력에는 코드와 외부 계약을
+제공하고, 기대하는 판정은 사람이 읽는 평가 기준에만 둡니다.
 
 - 개선에 사용하는 calibration 6개: 권한 검사 누락, 수정 확인, 기존 문제와 새
   회귀 구분, 동작이 같은 변경, 근거 부족, 정상적인 예외 처리.
 - 마지막 확인에 사용하는 holdout 4개: 파괴적인 데이터 삭제와 수정, 비밀 정보
   노출과 안전한 응답 변경.
 
+저장소 검증은 `evals/suites/` 아래의 모든 JSON을 중첩 디렉터리까지 찾아
+행동 평가 스위트로 검사하며, 잘못된 정의는 실패 처리합니다. `evals/`의 다른
+위치에 있는 JSON은 별도 형식일 수 있으므로 이 검사의 대상이 아닙니다.
+
 첫 비교는 `스킬 없음 → 현재 스킬`, 다음 비교는 `현재 스킬 → 수정한 스킬`입니다.
-수정한 스킬에는 같은 디렉터리의 일반 UTF-8 텍스트 파일을 확장자와 관계없이
-포함합니다. Markdown뿐 아니라 YAML·JSON·스크립트 원문도 프롬프트와 해시 대상인
+수정한 스킬에는 같은 디렉터리의 숨김 항목을 제외한 일반 UTF-8 텍스트 파일을
+확장자와 관계없이 포함합니다. 이름이 `.`으로 시작하는 경로 요소는 탐색하거나
+읽기 전에 제외하므로 `.env`, `.git/`, `references/.private/`는 스냅샷·프롬프트·
+스킬 해시에 포함되지 않습니다. 이는 경로에 따른 경계이며 일반적인 비밀 정보
+탐지 기능은 아닙니다. 보이는 참조 파일에 있는 민감한 값은 직접 제거해야 합니다.
+Markdown뿐 아니라 YAML·JSON·스크립트 원문도 프롬프트와 해시 대상인
 스냅샷에 들어갑니다. 스크립트는 텍스트로 제공하며 하네스가 실행하지 않습니다.
 심링크·비정규 파일·NUL 바이트·유효하지 않은 UTF-8, 파일당 1,000,000바이트 초과나
 전체 4,000,000바이트 초과는 해당 경로를 알리고 실행 전에 거부합니다. 크기는
-원본 파일의 바이트 수 기준입니다. 지원하지 않는 자료를 조용히 제외하지 않습니다. 스킬을
-명시적으로 공급하므로 자동 선택 성능이나 실제 도구 사용 안전성을 평가하지는
-않습니다. 각 사례가 작기 때문에 실제 저장소 탐색 능력 전체를 대표하지 않습니다.
+원본 파일의 바이트 수 기준입니다. 숨김 항목 외의 지원하지 않는 자료를 조용히
+제외하지 않습니다. 스킬을 명시적으로 공급하므로 자동 선택 성능이나 실제 도구
+사용 안전성을 평가하지는 않습니다. 각 사례가 작기 때문에 실제 저장소 탐색
+능력 전체를 대표하지 않습니다.
 
 ## 사용 순서
 
@@ -39,14 +50,31 @@ Garden Eval은 **이 스킬 변경을 유지할 근거가 있는가**를 확인�
 
 ```bash
 python3 scripts/skill_eval.py run \
-  --suite evals/critical-review.json \
-  --skill core/skills/critical-review --label current \
+  --suite evals/suites/critical-review.json \
+  --skill none --label baseline \
   --model YOUR_MODEL --environment 'Codex VERSION; controlled profile SETTINGS' \
   --split calibration --repeat 2 --timeout 180 \
-  --out work/eval/current.json \
+  --out work/eval/baseline.json \
   -- codex exec --ephemeral --skip-git-repo-check \
      --sandbox read-only --model YOUR_MODEL -
+```
 
+같은 모델·명령·환경으로 현재 스킬을 실행하되 다음 인자만 바꿉니다.
+
+```text
+--skill core/skills/critical-review --label current --out work/eval/current.json
+```
+
+수정 후보는 스킬 디렉터리와 참조 파일을 `work/candidate`에 복사해 필요한
+부분만 고친 뒤 다음 인자로 실행합니다.
+
+```text
+--skill work/candidate --label candidate --out work/eval/candidate.json
+```
+
+각 실행 파일에 대해 판정 템플릿을 생성합니다. 현재 스킬의 예시는 다음과 같습니다.
+
+```bash
 python3 scripts/skill_eval.py assess work/eval/current.json \
   --out work/eval/current-assessment.json
 ```
@@ -54,8 +82,8 @@ python3 scripts/skill_eval.py assess work/eval/current.json \
 실행 파일의 실제 답을 읽고 판정 파일의 `reviewer`, `verdict`, `note`를 채웁니다.
 `pass`와 `fail`에는 근거가 필요합니다. 확인하지 못했다면 `unjudged`로 남깁니다.
 `review_minutes`는 직접 확인하는 데 쓴 시간이고, 미측정이면 `null`입니다.
-수정한 스킬 디렉터리를 `work/candidate`에 준비한 뒤, 다른 출력 파일을 지정해
-같은 모델·명령·환경에서 실행하고 판정합니다.
+baseline과 candidate에도 같은 방식으로 판정 파일을 만듭니다. 실행 파일이나
+판정 파일의 기준은 직접 수정하지 않습니다. 판정 파일은 해당 실행의 해시에 연결됩니다.
 
 ```bash
 python3 scripts/skill_eval.py compare \
@@ -65,21 +93,38 @@ python3 scripts/skill_eval.py compare \
   --out work/eval/comparison.md --fail-on-regression
 ```
 
-`fail → pass`는 개선, `pass → fail`은 퇴행입니다. 실행 실패·시간 초과·미판정은
+스킬 없음과 현재 스킬도 같은 방식으로 비교해 추가한 지침의 효용을 확인합니다.
+`fail → pass`는 개선, `pass → fail`은 퇴행입니다. `pass → pass`는
+`unchanged_pass`, `fail → fail`은 `unchanged_fail`로 나누어, 남은 실패가
+단순한 ‘변화 없음’에 가려지지 않게 합니다. 실행 실패·시간 초과·미판정은
 판단 불가로 표시합니다. 다른 사례가 좋아졌다고 퇴행을 평균 점수로 지우지 않습니다.
 calibration과 holdout 결과, 완료/전체 실행 수, 실패를 포함한 실행 시간, 사람의
 검토 시간과 측정 범위를 나눠 보여줍니다. 토큰과 금액은 현재 수집하지 않습니다.
-종료 코드 0은 리포트 생성 성공이지 품질 통과가 아닙니다.
+종료 코드는 `0`이면 명령 완료, `1`이면 `--fail-on-regression`을 사용한
+비교에서 판정된 퇴행 발견, `2`이면 잘못된 입력·비교 불가능한 실행·출력 경로
+충돌입니다. 모든 판정이 `unjudged`인 리포트도 0으로 완료하지만 판단 불가로
+명시하며, 품질 통과나 병합 허가를 뜻하지 않습니다.
 
-모델·환경·평가 사례·runner 및 명시적 실행 파일·반복 수·시간 제한이 다른 실행은
-비교하지 않습니다. 실행 결과를 바꾸거나 다른 실행의 판정 파일을 붙이는 실수도
+하네스·모델·환경·선택한 평가 사례와 기준·runner 및 명시적 실행 파일·split·
+반복 수·시간 제한·합성 여부가 다른 실행은 비교하지 않습니다. 전체 스위트는
+감사를 위해 스냅샷과 해시를 남기지만, 선택하지 않은 holdout 사례를 추가해도
+기존 calibration 실행의 비교를 막지 않습니다. 선택한 사례의 입력이나 판정
+기준을 바꾸었다면 양쪽 조건을 새로 실행해야 합니다.
+
+두 실행의 해시와 실제 스킬 파일 내용은 달라야 합니다. 같은 응답을 담은 한
+실행을 자기 자신과 비교하거나, 내용이 같은 스킬의 디렉터리 이름만 바꾸어
+개선을 주장할 수 없습니다. 같은 응답에 대한 상반된 판정은 스킬 개선이 아니라
+판정자 간 이견으로 따로 확인해야 합니다. 이 검사만으로 인과관계가 입증되지는
+않으므로 반복 실행과 사람의 검토가 여전히 필요합니다.
+
+실행 결과를 바꾸거나 다른 실행의 판정 파일을 붙이는 실수도
 해시로 검사합니다. 이는 위변조 방지나 실제 모델 버전의 원격 검증은 아닙니다.
 
 프롬프트 JSON은 객체 키 순서를 고정하므로 입력 키의 순서만 바뀌어도 runner가
 받는 바이트는 같습니다. 각 시도에는 전체 프롬프트의 `prompt_sha256`과 스킬 내용을
 제외한 입력의 `input_sha256`을 따로 남깁니다. 실행 기록을 읽을 때 두 해시를 다시
 검증하고, 비교할 때는 같은 사례·시도의 입력 해시가 일치하는지 확인합니다.
-스킬 내용은 전후 비교를 위해 달라질 수 있습니다.
+스킬 파일 내용은 전후 비교를 위해 달라야 합니다.
 
 ## 개선 루프의 경계
 
@@ -95,6 +140,16 @@ runner는 stdin으로 프롬프트를 읽고 stdout으로 최종 답만 내는 �
 응답·로그가 잘리면 기록에 표시합니다. 큰 응답과 실행 실패가 겹쳐도 시간 초과나
 비정상 종료 상태가 사라지지 않습니다.
 
+실행 파일과 명시적 파일 인자는 실험 시작 전과 종료 후에 한 번씩 해시를
+검사합니다. 각 시도 전에는 장치·inode·크기·수정 시간·변경 시간·모드의 변화를
+확인해 일반적인 중간 변경을 막습니다. 매번 큰 실행 파일을 다시 해시하지는 않으며,
+악의적인 위변조나 adapter가 불러오는 모든 의존성을 검증하는 기능도 아닙니다.
+
+시간 제한은 자식 프로세스가 상속한 출력 파이프에도 적용합니다. 시간 초과나
+중단 시에는 runner 종료를 회수하기 전에 프로세스 그룹을 정리합니다. runner가
+종료하고 출력 파이프까지 닫은 뒤 남긴 독립적인 자식 프로세스의 정리까지 보장하지는
+않습니다. 이 경계는 runner의 격리 환경에서 통제해야 합니다.
+
 임시 작업 디렉터리는 보안 샌드박스가 아닙니다. 읽기 전용 권한, 외부 서비스 접근,
 사용자 설정과 기존 스킬의 개입은 호스트에서 통제해야 합니다. 특히 ‘스킬 없음’
 조건에도 사용자 전역 스킬이 개입하면 비교가 오염됩니다. 인증과 설정은 호스트의
@@ -104,10 +159,44 @@ runner는 stdin으로 프롬프트를 읽고 stdout으로 최종 답만 내는 �
 직접 확인합니다. 실행 전 입력·스냅샷·해시를 검증하고, 기존 파일을 덮어쓰지 않고
 출력 파일과 `<출력 경로>.journal.jsonl`을 확보합니다. journal에는 실험 정보와
 각 시도의 시작·완료, 전체 완료·실패를 추가할 때마다 디스크에 기록합니다.
+journal 확보 중 충돌하면 이번에 만든 빈 출력만 제거하고 runner는 호출하지
+않습니다. 기존 파일은 유지합니다.
 뒤의 실행이 실패해도 앞에서 완료한 시도의 응답과 비용 근거가 남습니다.
 진행 중에 중단된 시도는 시작 기록만 남을 수 있습니다. 미완료 실험은 최종 출력이
 빈 파일로 남을 수 있으며, 판정·비교에는 완료된 실행 파일만 사용할 수 있습니다.
 자동 재개는 지원하지 않으므로 새 출력 경로로 다시 실행하고, 중단된 실험도 비용
-분석에서 빠뜨리지 않습니다. 기본 테스트와
-[비용 없는 smoke 예제](skill-evaluation.md#no-cost-plumbing-smoke-test)는 합성
-응답으로 기능만 확인합니다. 이를 실제 AI 성능 개선 결과로 인용하지 않습니다.
+분석에서 빠뜨리지 않습니다.
+
+## 비용 없는 smoke 실행
+
+스크립트나 mock runner에는 반드시 `--synthetic`을 붙입니다. 아래 명령은 같은
+고정 응답을 반환하며 실제 모델의 품질을 검증하지 않습니다. 스킬 없음과 현재
+스킬을 각각 새로 실행해 두 판정 파일을 연결하는 기능만 확인합니다.
+
+```bash
+python3 scripts/skill_eval.py run \
+  --suite evals/suites/critical-review.json --skill none --label smoke-baseline \
+  --model scripted --environment smoke --repeat 1 --synthetic \
+  --out work/eval/smoke-baseline.json \
+  -- python3 -c 'import sys; sys.stdin.read(); print("Scripted answer, not model evidence.")'
+python3 scripts/skill_eval.py run \
+  --suite evals/suites/critical-review.json \
+  --skill core/skills/critical-review --label smoke-current \
+  --model scripted --environment smoke --repeat 1 --synthetic \
+  --out work/eval/smoke-current.json \
+  -- python3 -c 'import sys; sys.stdin.read(); print("Scripted answer, not model evidence.")'
+python3 scripts/skill_eval.py assess work/eval/smoke-baseline.json \
+  --out work/eval/smoke-baseline-assessment.json
+python3 scripts/skill_eval.py assess work/eval/smoke-current.json \
+  --out work/eval/smoke-current-assessment.json
+python3 scripts/skill_eval.py compare \
+  work/eval/smoke-baseline.json work/eval/smoke-current.json \
+  --before-assessment work/eval/smoke-baseline-assessment.json \
+  --after-assessment work/eval/smoke-current-assessment.json \
+  --out work/eval/smoke-comparison.md
+```
+
+보고서에는 **SYNTHETIC**이 표시되고, 판정 전에는 모두 판단 불가로 남습니다.
+이를 실제 AI 성능 개선 결과로 인용하지 않습니다. 임의의 adapter가 실제 모델을
+호출했는지는 하네스가 독립적으로 알 수 없으므로 실행자는 출처를 정확히 선언해야
+합니다.

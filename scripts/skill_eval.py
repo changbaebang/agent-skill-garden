@@ -20,6 +20,7 @@ import sys
 import tempfile
 import time
 from datetime import datetime, timezone
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -80,6 +81,15 @@ def suite_at(path: Path) -> dict:
     return suite
 
 
+def selected_cases(suite: dict, split: str) -> list[dict]:
+    return [case for case in suite["cases"] if split == "all" or case["split"] == split]
+
+
+def selected_suite_hash(suite: dict, split: str) -> str:
+    return digest({"version": suite["version"], "id": suite["id"],
+                   "cases": selected_cases(suite, split)})
+
+
 def validate_suite(suite: dict) -> None:
     require(isinstance(suite, dict), "suite must be an object")
     require(suite.get("version") == VERSION, "unsupported suite version")
@@ -115,23 +125,34 @@ def skill_at(path: str) -> dict:
     require((folder / "SKILL.md").is_file(), "skill directory needs SKILL.md")
     files = {}
     total = 0
-    for entry in sorted(folder.rglob("*")):
-        require(not entry.is_symlink() and folder in entry.resolve().parents,
-                f"skill references must stay inside the skill directory: {entry.name}")
-        if entry.is_dir():
-            continue
-        name = str(entry.relative_to(folder))
-        require(entry.is_file(), f"unsupported non-regular skill file: {name}")
-        with entry.open("rb") as handle:
-            raw = handle.read(MAX_SKILL_FILE + 1)
-        require(len(raw) <= MAX_SKILL_FILE, f"skill file exceeds {MAX_SKILL_FILE} bytes: {name}")
-        total += len(raw)
-        require(total <= MAX_SKILL_TOTAL, f"skill snapshot exceeds {MAX_SKILL_TOTAL} bytes: {name}")
-        require(b"\x00" not in raw, f"binary skill file is unsupported: {name}")
-        try:
-            files[name] = raw.decode("utf-8")
-        except UnicodeDecodeError as error:
-            raise ValueError(f"skill file must be UTF-8 text: {name}") from error
+
+    def cannot_walk(error: OSError) -> None:
+        raise ValueError("cannot enumerate skill directory") from error
+
+    # Exclude hidden state before descending or opening files, including .git
+    # and .env. This is an inclusion policy, not general-purpose secret detection.
+    for current, directories, names in os.walk(folder, topdown=True, onerror=cannot_walk,
+                                               followlinks=False):
+        directories[:] = sorted(name for name in directories if not name.startswith("."))
+        entries = directories + sorted(name for name in names if not name.startswith("."))
+        for name in entries:
+            entry = Path(current) / name
+            require(not entry.is_symlink() and folder in entry.resolve().parents,
+                    f"skill references must stay inside the skill directory: {entry.name}")
+            if entry.is_dir():
+                continue
+            name = str(entry.relative_to(folder))
+            require(entry.is_file(), f"unsupported non-regular skill file: {name}")
+            with entry.open("rb") as handle:
+                raw = handle.read(MAX_SKILL_FILE + 1)
+            require(len(raw) <= MAX_SKILL_FILE, f"skill file exceeds {MAX_SKILL_FILE} bytes: {name}")
+            total += len(raw)
+            require(total <= MAX_SKILL_TOTAL, f"skill snapshot exceeds {MAX_SKILL_TOTAL} bytes: {name}")
+            require(b"\x00" not in raw, f"binary skill file is unsupported: {name}")
+            try:
+                files[name] = raw.decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise ValueError(f"skill file must be UTF-8 text: {name}") from error
     # Explicit snapshot: no implicit reads of linked external skills or scripts.
     return {"name": folder.name, "files": files}
 
@@ -172,6 +193,36 @@ def runner_identity(command: list[str]) -> dict:
             # its environment even when the underlying binary is identical.
             normalized[index] = str(Path(name).absolute())
     return {"command": normalized, "files": files}
+
+
+def runner_stamps(identity: dict) -> dict:
+    """Cheap drift signals between calls; full content hashes still bookend a run."""
+    stamps = {}
+    for index in identity["files"]:
+        stat = Path(identity["command"][int(index)]).stat()
+        stamps[index] = (stat.st_dev, stat.st_ino, stat.st_size,
+                         stat.st_mtime_ns, stat.st_ctime_ns, stat.st_mode)
+    return stamps
+
+
+@contextmanager
+def capture_outputs(path: Path, journal_path: Path):
+    """Reserve both names, cleaning only our unused output on setup failure."""
+    with path.open("x", encoding="utf-8") as output:
+        owned = os.fstat(output.fileno())
+        try:
+            journal = journal_path.open("x", encoding="utf-8")
+        except BaseException:
+            # Do not remove a file another process put at this path meanwhile.
+            try:
+                current = path.lstat()
+                if (current.st_dev, current.st_ino) == (owned.st_dev, owned.st_ino):
+                    path.unlink()
+            except OSError:
+                pass
+            raise
+        with journal:
+            yield output, journal
 
 
 def execute(command: list[str], prompt: str, timeout: float) -> dict:
@@ -240,12 +291,14 @@ def execute(command: list[str], prompt: str, timeout: float) -> dict:
                     except subprocess.TimeoutExpired:
                         status = "timeout"
         finally:
-            # Stop the entire group on timeout/interruption and clean up any
-            # children left behind after their parent exits successfully.
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            # Signal only while the unreaped child still reserves this PID.
+            # After wait() reaps it, that number may name an unrelated group.
+            # Normal completion cannot guarantee cleanup of surviving children.
+            if process.returncode is None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
             process.wait()
             for stream in (process.stdin, process.stdout, process.stderr):
                 stream.close()
@@ -269,12 +322,13 @@ def run(args: argparse.Namespace) -> None:
     require(bool(command), "provide a runner command after --")
     identity = runner_identity(command)
     command = identity["command"]
+    stamps = runner_stamps(identity)
     require(not args.out.exists(), "output already exists; choose a new path")
     require(args.repeat > 0 and args.repeat <= 20, "repeat must be 1..20")
     require(number(args.timeout) and args.timeout > 0, "timeout must be positive")
     require(nonempty(args.model) and nonempty(args.environment) and nonempty(args.label),
             "model, environment, and label must be nonempty")
-    cases = [c for c in suite["cases"] if args.split == "all" or c["split"] == args.split]
+    cases = selected_cases(suite, args.split)
     require(bool(cases), "selected split has no cases")
     # Fail on serialization and snapshot errors before making any runner calls.
     prompts = [(case, prompt_for(case, skill), input_hash(case)) for case in cases]
@@ -283,6 +337,7 @@ def run(args: argparse.Namespace) -> None:
         "harness_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "created_at": datetime.now(timezone.utc).isoformat(), "label": args.label,
         "suite": suite, "suite_sha256": digest(suite), "skill": skill,
+        "selected_suite_sha256": selected_suite_hash(suite, args.split),
         "skill_sha256": digest(skill), "model": args.model,
         "environment": args.environment,
         "runner_identity": identity, "repeat": args.repeat,
@@ -293,8 +348,7 @@ def run(args: argparse.Namespace) -> None:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     # Reserve both names before paid work; x also rejects dangling symlinks.
     # An interrupted final file is not a run. The journal preserves completed rows.
-    with args.out.open("x", encoding="utf-8") as output, \
-            journal_path.open("x", encoding="utf-8") as journal:
+    with capture_outputs(args.out, journal_path) as (output, journal):
         def event(kind: str, **fields) -> None:
             journal.write(json.dumps({"event": kind, **fields}, ensure_ascii=False,
                                      allow_nan=False) + "\n")
@@ -306,7 +360,7 @@ def run(args: argparse.Namespace) -> None:
         try:
             for trial in range(1, args.repeat + 1):
                 for case, prompt, source_hash in prompts:
-                    require(identity == runner_identity(command),
+                    require(stamps == runner_stamps(identity),
                             "runner files changed during execution")
                     event("attempt_started", case_id=case["id"], trial=trial)
                     print(f"Running {case['id']} trial {trial}", file=sys.stderr)
@@ -358,8 +412,12 @@ def read_run(path: Path) -> dict:
     require(record.get("split") in (*SPLITS, "all"), "invalid run split")
     require(type(record.get("repeat")) is int and 1 <= record["repeat"] <= 20,
             "invalid repetition count")
-    cases = {c["id"]: c for c in record["suite"]["cases"]
-             if record["split"] == "all" or c["split"] == record["split"]}
+    require(record.get("selected_suite_sha256") == selected_suite_hash(record["suite"], record["split"]),
+            "selected suite hash mismatch")
+    cases = {c["id"]: c for c in selected_cases(record["suite"], record["split"])}
+    prompt_hashes = {key: hashlib.sha256(prompt_for(case, record["skill"]).encode()).hexdigest()
+                     for key, case in cases.items()}
+    input_hashes = {key: input_hash(case) for key, case in cases.items()}
     expected = {(key, trial) for key in cases for trial in range(1, record["repeat"] + 1)}
     seen = set()
     for row in record["results"]:
@@ -370,9 +428,8 @@ def read_run(path: Path) -> dict:
         require(number(row["elapsed_seconds"]), "invalid elapsed time")
         require(isinstance(row["answer"], str), "invalid answer")
         require(row["status"] != "ok" or bool(row["answer"].strip()), "empty successful answer")
-        prompt = prompt_for(cases[key[0]], record["skill"])
-        require(row.get("input_sha256") == input_hash(cases[key[0]]), "input hash mismatch")
-        require(row["prompt_sha256"] == hashlib.sha256(prompt.encode()).hexdigest(),
+        require(row.get("input_sha256") == input_hashes[key[0]], "input hash mismatch")
+        require(row["prompt_sha256"] == prompt_hashes[key[0]],
                 "prompt hash mismatch")
     require(seen == expected, "missing attempts; failures must not be dropped")
     return record
@@ -422,25 +479,33 @@ def judgments(record: dict, path: Path | None) -> dict:
 
 
 def md(value: object) -> str:
-    return str(value).replace("&", "&amp;").replace("<", "&lt;").replace(
-        ">", "&gt;").replace("|", "\\|").replace("\n", " ").replace("\r", " ")
+    # Character entities are parsed after table boundaries and Markdown syntax.
+    # Unlike backslash escapes, an existing backslash cannot unescape a pipe.
+    escapes = {"&": "&amp;", "<": "&lt;", ">": "&gt;", "\\": "&#92;", "|": "&#124;",
+               "`": "&#96;", "*": "&#42;", "_": "&#95;", "[": "&#91;",
+               "]": "&#93;", "~": "&#126;"}
+    return "".join(" " if char.isspace() else escapes.get(char, char) for char in str(value))
 
 
 def compare(before: dict, after: dict, left: dict, right: dict) -> tuple[str, bool]:
     require(before.get("state") == after.get("state") == "complete",
             "only complete runs can be assessed or compared")
-    for field in ("harness_sha256", "suite_sha256", "model", "environment", "runner_identity", "repeat", "split",
+    require(before["sha256"] != after["sha256"], "incomparable runs: same captured run")
+    require(digest(before["skill"]["files"]) != digest(after["skill"]["files"]),
+            "incomparable runs: identical skill content; no skill change to evaluate")
+    for field in ("harness_sha256", "selected_suite_sha256", "model", "environment", "runner_identity", "repeat", "split",
                   "timeout_seconds", "kind"):
         require(before[field] == after[field], f"incomparable runs: {field} differs")
     cases = {c["id"]: c for c in before["suite"]["cases"]}
     later = {(r["case_id"], r["trial"]): r for r in after["results"]}
-    summary = {split: dict.fromkeys(("improved", "regressed", "unchanged", "inconclusive"), 0)
+    summary = {split: dict.fromkeys(("improved", "regressed", "unchanged_pass", "unchanged_fail", "inconclusive"), 0)
                for split in SPLITS}
     lines = ["# Skill evaluation comparison", ""]
     if before["kind"] == "synthetic":
         lines += ["**SYNTHETIC: scripted plumbing demonstration, not model-quality evidence.**", ""]
     lines += [f"Before: {md(before['label'])}; after: {md(after['label'])}.",
-              f"Suite: `{before['suite_sha256']}`.",
+              f"Selected cases: `{before['selected_suite_sha256']}`.",
+              f"Full suite snapshots: `{before['suite_sha256']}` → `{after['suite_sha256']}`.",
               f"Before run: `{before['sha256']}`; after run: `{after['sha256']}`.",
               f"Skill snapshots: `{before['skill_sha256']}` → `{after['skill_sha256']}`.",
               f"Declared model: {md(before['model'])}; environment: {md(before['environment'])}.",
@@ -460,7 +525,7 @@ def compare(before: dict, after: dict, left: dict, right: dict) -> tuple[str, bo
             if old["status"] != "ok" or new["status"] != "ok" or "unjudged" in (a, b):
                 change = "inconclusive"
             elif a == b:
-                change = "unchanged"
+                change = f"unchanged_{a}"
             else:
                 change = "improved" if b == "pass" else "regressed"
             summary[case["split"]][change] += 1
@@ -503,6 +568,7 @@ def compare(before: dict, after: dict, left: dict, right: dict) -> tuple[str, bo
               "Use calibration cases for edits and untouched cases for final checks. "
               "The bundled holdout is public, so it is not a secret or leakage-proof benchmark. "
               "Repeat runs to inspect variability; these counts are not significance tests. "
+              "A lack of new regressions is not a quality pass; inspect unchanged_fail too. "
               "Do not infer production impact, time saved, or autonomous tool safety from this report.", ""]
     return "\n".join(lines), any(c["regressed"] for c in summary.values())
 

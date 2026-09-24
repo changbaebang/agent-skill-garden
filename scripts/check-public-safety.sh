@@ -31,6 +31,12 @@ while IFS= read -r -d '' path; do
   files+=("./$path")
 done < "$file_list"
 
+# A successful enumeration with no eligible contents is not a completed scan.
+if [[ ${#files[@]} -eq 0 ]]; then
+  echo "No eligible repository files; cannot verify public safety." >&2
+  exit 1
+fi
+
 # Resolve the scanner up front; distinguish a clean result (1) from an error.
 # Treat binary files as text in both implementations so their coverage agrees.
 if command -v rg >/dev/null 2>&1; then
@@ -50,7 +56,6 @@ fi
 while IFS= read -r pattern || [[ -n "$pattern" ]]; do
   [[ -z "${pattern//[[:space:]]/}" ]] && continue
   [[ "$pattern" == \#* ]] && continue
-  [[ ${#files[@]} -eq 0 ]] && continue
   if scan "$pattern"; then
     failed=1
   else

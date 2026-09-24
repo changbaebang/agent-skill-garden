@@ -10,7 +10,12 @@ skills. Python 3.9+ and a POSIX host are sufficient for the harness.
 `validate_evals.py` checks routing-case definitions. It does not run an agent or
 prove routing correctness. `skill_eval.py` adds execution and comparison; the
 first suite targets `critical-review`, with six calibration and four holdout
-cases authored from scratch. No private work records are included.
+cases authored from scratch. No private work records are included. These are
+small authored fixtures, not a validated benchmark. Inputs provide source code
+and external contracts; expected verdicts belong only in the human criteria.
+Repository validation discovers all JSON definitions under `evals/suites/`,
+including nested directories, and rejects malformed suites. Other JSON files
+under `evals/` may use different formats and are not treated as behavioral suites.
 
 ## 1. Run one condition
 
@@ -27,7 +32,7 @@ For example, on a Codex CLI version supporting these options:
 
 ```bash
 python3 scripts/skill_eval.py run \
-  --suite evals/critical-review.json \
+  --suite evals/suites/critical-review.json \
   --skill none --label baseline \
   --model YOUR_MODEL --environment 'Codex VERSION; controlled profile SETTINGS' \
   --split calibration --repeat 2 --timeout 180 \
@@ -65,11 +70,15 @@ No live model is invoked by repository validation or tests.
 
 ## What an attempt contains
 
-The runner receives only the task, the source snapshots, and regular UTF-8 text
-files from the chosen skill directory, regardless of extension. YAML, JSON and
+The runner receives only the task, the source snapshots, and visible regular
+UTF-8 text files from the chosen skill directory, regardless of extension.
+Any path component beginning with `.` is excluded before traversal or reading:
+for example `.env`, `.git/`, and `references/.private/` never enter the snapshot,
+prompt or skill hash. This is a path boundary, not a general secret detector;
+remove sensitive values from visible reference files yourself. YAML, JSON and
 script sources are included in both the prompt and the hashed snapshot; scripts
-are supplied as text and are not executed by the harness. Symbolic links,
-non-regular files, NUL bytes, invalid UTF-8, files over 1,000,000 bytes, and a
+are supplied as text and are not executed by the harness. For visible paths,
+symbolic links, non-regular files, NUL bytes, invalid UTF-8, files over 1,000,000 bytes, and a
 combined snapshot over 4,000,000 bytes are rejected before runner execution with
 the affected path, rather than silently omitted. Sizes refer to raw file bytes.
 The runner does not receive check criteria, case IDs, split labels, previous
@@ -84,8 +93,12 @@ source hash, model and environment declarations, the runner command and hashes
 of its executable and explicit file arguments under `runner_identity`, every
 attempt's answer, status, elapsed time and the bounded tail of stderr. Truncation
 is recorded so a clipped answer or log is not mistaken for complete evidence.
-Hashing detects accidental edits, not malicious tampering or undisclosed model
-changes. Dependencies imported by an adapter are not hashed; pin them and include
+The executable and explicit file arguments are hashed once before and once after
+the experiment. Before each attempt their device, inode, size, modification time,
+change time and mode are checked for drift. This avoids rehashing large binaries
+for every attempt while stopping ordinary mid-run changes. Hashing detects
+accidental edits, not malicious tampering or undisclosed model changes.
+Dependencies imported by an adapter are not hashed; pin them and include
 their versions in the environment declaration. Keep credentials in the host's
 credential store or environment, never in command arguments.
 
@@ -97,12 +110,17 @@ Only the first 1,000,000 stdout bytes and last 8,192 stderr bytes are retained i
 memory; excess output is discarded while the runner continues until completion
 or its deadline. Input delivery and both output streams are serviced concurrently,
 so a runner that delays reading stdin cannot block output capture or the timeout.
-The same deadline covers output pipes inherited by child processes, and cleanup
-stops remaining members of the runner's process group.
+The same deadline covers output pipes inherited by child processes. Timeout or
+interruption cleanup targets the runner's process group before its leader is
+reaped. Once the runner has exited and its output pipes have closed, the harness
+does not promise to clean up detached descendants; use runner-level isolation
+for that boundary.
 
 The suite, snapshots and hashes are checked before any runner is invoked. The
 requested output and a companion `<output>.journal.jsonl` are reserved without
-overwriting existing files. The append-only journal records the experiment
+overwriting existing files. If journal setup conflicts, the harness removes only
+the empty output it just reserved and invokes no runner; existing files remain
+untouched. The append-only journal records the experiment
 header, attempt starts and finishes, and completion or failure, flushing each
 event to disk. Completed attempts, including errors and timeouts, therefore
 survive a later harness failure. An interrupted attempt may have only its start
@@ -146,16 +164,25 @@ python3 scripts/skill_eval.py compare \
 ```
 
 Also compare the baseline against the current skill to check that added guidance
-has value at all. Comparisons require matching harness, suite, model, environment, runner
-identity, split, repetition count, timeout and synthetic/runner kind. A change to
-the skill snapshot is expected. A changed model or rubric needs a new matched
-experiment rather than a claimed skill improvement.
+has value at all. Comparisons require matching harness, model, environment, runner
+identity, split, repetition count, timeout and synthetic/runner kind. Suite
+compatibility covers the selected cases and their criteria. The full suite is
+retained and hashed for audit, but adding untouched holdout cases does not
+invalidate earlier calibration comparisons. Changing a selected input or rubric
+requires fresh matched runs.
+
+The two run hashes and the effective skill contents must differ. Comparing one
+captured answer against itself, or changing only a skill directory's name,
+cannot establish a skill improvement. Differences between judgments of the same
+answer are reviewer disagreement and must be reconciled separately. These guards
+do not establish causality by themselves; repeated runs and human review remain
+necessary.
 
 Prompt JSON uses a canonical object-key order, so reordering input keys alone
 does not change the bytes sent to the runner. Each attempt records the full
 `prompt_sha256` and a separate `input_sha256` for the prompt without skill content.
 Run validation recomputes both hashes, and comparison requires matching input
-hashes for each case/trial while allowing the skill snapshot to change.
+hashes for each case/trial while requiring a change to the skill contents.
 
 Each check/trial is classified as:
 
@@ -163,7 +190,8 @@ Each check/trial is classified as:
 | --- | --- |
 | fail → pass | improved |
 | pass → fail | regressed |
-| pass → pass or fail → fail | unchanged; the report retains both verdicts |
+| pass → pass | unchanged_pass |
+| fail → fail | unchanged_fail; the known failure remains |
 | unjudged or execution failure on either side | inconclusive |
 
 Reports keep calibration and holdout counts separate and list every compared
@@ -202,15 +230,24 @@ about model quality. Always mark scripted/mock execution with `--synthetic`.
 
 ```bash
 python3 scripts/skill_eval.py run \
-  --suite evals/critical-review.json --skill none --label smoke \
+  --suite evals/suites/critical-review.json --skill none --label smoke-baseline \
   --model scripted --environment smoke --repeat 1 --synthetic \
-  --out work/eval/smoke.json \
+  --out work/eval/smoke-baseline.json \
   -- python3 -c 'import sys; sys.stdin.read(); print("Scripted answer, not model evidence.")'
-python3 scripts/skill_eval.py assess work/eval/smoke.json \
-  --out work/eval/smoke-assessment.json
-python3 scripts/skill_eval.py compare work/eval/smoke.json work/eval/smoke.json \
-  --before-assessment work/eval/smoke-assessment.json \
-  --after-assessment work/eval/smoke-assessment.json \
+python3 scripts/skill_eval.py run \
+  --suite evals/suites/critical-review.json \
+  --skill core/skills/critical-review --label smoke-current \
+  --model scripted --environment smoke --repeat 1 --synthetic \
+  --out work/eval/smoke-current.json \
+  -- python3 -c 'import sys; sys.stdin.read(); print("Scripted answer, not model evidence.")'
+python3 scripts/skill_eval.py assess work/eval/smoke-baseline.json \
+  --out work/eval/smoke-baseline-assessment.json
+python3 scripts/skill_eval.py assess work/eval/smoke-current.json \
+  --out work/eval/smoke-current-assessment.json
+python3 scripts/skill_eval.py compare \
+  work/eval/smoke-baseline.json work/eval/smoke-current.json \
+  --before-assessment work/eval/smoke-baseline-assessment.json \
+  --after-assessment work/eval/smoke-current-assessment.json \
   --out work/eval/smoke-comparison.md
 ```
 

@@ -8,6 +8,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -76,6 +77,61 @@ class SkillEvaluationExecutionTests(unittest.TestCase):
         self.assertFalse(result["stdout_truncated"])
         self.assertFalse(result["stderr_truncated"])
 
+    def test_reaped_runner_is_never_signaled(self):
+        # Mock the unsafe call rather than sending a signal to a reused group.
+        for exit_code in (0, 7):
+            with self.subTest(exit_code=exit_code), patch.object(EVAL.os, "killpg") as kill:
+                result = self.execute(f"import sys; print('answer'); sys.exit({exit_code})")
+                self.assertEqual(result["exit_code"], exit_code)
+                kill.assert_not_called()
+
+    @unittest.skipUnless(os.name == "posix", "process groups require POSIX")
+    def test_timeout_signals_group_before_reaping_runner(self):
+        events = []
+        real_wait = EVAL.subprocess.Popen.wait
+        real_killpg = EVAL.os.killpg
+
+        def wait(process, *args, **kwargs):
+            code = real_wait(process, *args, **kwargs)
+            events.append(("reaped", code))
+            return code
+
+        def killpg(pid, sig):
+            events.append(("signal", sig))
+            return real_killpg(pid, sig)
+
+        with patch.object(EVAL.subprocess.Popen, "wait", wait), \
+                patch.object(EVAL.os, "killpg", killpg):
+            result = self.execute("import time; time.sleep(10)", timeout=0.2)
+        self.assertEqual(result["status"], "timeout")
+        self.assertEqual(events[0], ("signal", signal.SIGKILL))
+        self.assertEqual(events[1], ("reaped", -signal.SIGKILL))
+        self.assertEqual(sum(event[0] == "signal" for event in events), 1)
+
+    @unittest.skipUnless(os.name == "posix", "process groups require POSIX")
+    def test_interruption_signals_group_before_reaping_runner(self):
+        events = []
+        real_wait = EVAL.subprocess.Popen.wait
+        real_killpg = EVAL.os.killpg
+
+        def wait(process, *args, **kwargs):
+            code = real_wait(process, *args, **kwargs)
+            events.append(("reaped", code))
+            return code
+
+        def killpg(pid, sig):
+            events.append(("signal", sig))
+            return real_killpg(pid, sig)
+
+        with patch.object(EVAL.subprocess.Popen, "wait", wait), \
+                patch.object(EVAL.os, "killpg", killpg), \
+                patch.object(EVAL.selectors.DefaultSelector, "select", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.execute("import time; time.sleep(10)")
+        self.assertEqual(events[0], ("signal", signal.SIGKILL))
+        self.assertEqual(events[1], ("reaped", -signal.SIGKILL))
+        self.assertEqual(sum(event[0] == "signal" for event in events), 1)
+
     @unittest.skipUnless(os.name == "posix", "file-size resource limits require POSIX")
     def test_large_streams_do_not_use_unbounded_disk_capture(self):
         # A file-backed capture would hit this limit before either stream was
@@ -112,6 +168,14 @@ class SkillEvaluationExecutionTests(unittest.TestCase):
             timeout=0.3, prompt="x" * 2000000)
         self.assertEqual(result["status"], "timeout")
         self.assertIn("started", result["answer"])
+        self.assertLess(result["elapsed_seconds"], 2)
+
+    @unittest.skipUnless(os.name == "posix", "process groups require POSIX")
+    def test_closed_output_pipes_do_not_remove_runner_deadline(self):
+        result = self.execute(
+            "import os,time; os.close(1); os.close(2); time.sleep(10)", timeout=0.2)
+        self.assertEqual(result["status"], "timeout")
+        self.assertEqual(result["exit_code"], -signal.SIGKILL)
         self.assertLess(result["elapsed_seconds"], 2)
 
     @unittest.skipUnless(os.name == "posix", "process groups require POSIX")

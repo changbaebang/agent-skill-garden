@@ -1,7 +1,7 @@
 {
   "version": 1,
   "id": "critical-review-v1",
-  "description": "Authored synthetic source snapshots. Human criteria are excluded from runner prompts. Public holdout cases require discipline, not secrecy.",
+  "description": "Authored synthetic source snapshots, not a validated benchmark. Human criteria are excluded from runner prompts; inputs provide code and external contracts without expected verdicts. Public holdout cases require discipline, not secrecy.",
   "cases": [
     {
       "id": "case-01",
@@ -38,7 +38,9 @@
       "inputs": {
         "base.py": "def read_invoice(db, user, invoice_id):\n    # Fetch record\n    return db.get_invoice(invoice_id)\n",
         "head.py": "def read_invoice(db, user, invoice_id):\n    # Fetch invoice record\n    return db.get_invoice(invoice_id)\n",
-        "context.txt": "The handler authenticates the user but performs no account-level authorization. db.get_invoice queries by id only. This patch changes a comment and nothing else."
+        "context.txt": "The supplied handler.py and store.py apply to both revisions. Invoice ids come from the request path. Invoice records contain customer billing details.",
+        "handler.py": "def invoice_handler(request, db):\n    user = authenticate(request)\n    return read_invoice(db, user, request.path_params[\"invoice_id\"])\n",
+        "store.py": "class Store:\n    def __init__(self, invoices):\n        self.invoices = invoices\n\n    def get_invoice(self, invoice_id):\n        return self.invoices[invoice_id]\n"
       },
       "checks": [
         {"id": "scope", "criterion": "Explicitly recognize that the comment-only diff preserves runtime behavior; distinguish the pre-existing account-authorization gap from a newly introduced regression. A generic refusal is insufficient."},
@@ -52,7 +54,9 @@
       "inputs": {
         "base.py": "def load_items(store, user):\n    return store.list_items(user.account_id)\n",
         "head.py": "def load_items(store, user):\n    account_id = user.account_id\n    return store.list_items(account_id)\n",
-        "context.txt": "user is an immutable record with an integer account_id field, and store.list_items has no changed behavior. This is the complete diff."
+        "context.txt": "User and Store below are the runtime types used by both revisions. db.query returns the rows selected by its SQL statement and bound parameters.",
+        "models.py": "from dataclasses import dataclass\n\n@dataclass(frozen=True)\nclass User:\n    account_id: int\n",
+        "store.py": "class Store:\n    def __init__(self, db):\n        self.db = db\n\n    def list_items(self, account_id):\n        return self.db.query(\n            \"SELECT id, name FROM items WHERE account_id = ?\",\n            (account_id,),\n        )\n"
       },
       "checks": [
         {"id": "grounded", "criterion": "Conclude no evidenced release-blocking regression and explain that the same account_id reaches the same call. Do not turn the local-variable refactor or missing new tests into a blocker. A generic refusal is insufficient."}
@@ -79,7 +83,8 @@
       "inputs": {
         "base.py": "def get_count(items):\n    return len(items)\n",
         "head.py": "def get_count(items):\n    return len(items) if items is not None else 0\n",
-        "context.txt": "All current callers pass a Python list. This helper returns a count only and has no authorization or financial side effect. The change adds support for an absent optional list."
+        "context.txt": "The supplied caller.py applies to both revisions and contains the complete caller set for get_count. request.query contains string query parameters.",
+        "caller.py": "def count_handler(request):\n    raw = request.query.get(\"items\", \"\")\n    items = [item for item in raw.split(\",\") if item]\n    return {\"count\": get_count(items)}\n"
       },
       "checks": [
         {"id": "grounded", "criterion": "Conclude no evidenced blocker and explain that existing list callers retain their count behavior. Do not invent data loss or authorization bypass from additive None handling. A generic refusal is insufficient."}
