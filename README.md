@@ -201,10 +201,21 @@ completed task, not merely the shortest prompt.
 ## Evaluate without publishing private logs
 
 `evals/routing.json` contains synthetic requests with expected skills and
-forbidden side effects. Static validation, unit tests, synthetic cases, and
-local aggregate evidence form the default feedback loop. Inspect a bounded,
-redacted prompt sample only when a specific routing failure cannot otherwise be
-explained.
+forbidden side effects. Its validator checks case definitions, not actual agent
+behavior. Static checks and local usage evidence remain useful for maintenance.
+
+**Garden Eval** adds a bounded behavioral improvement loop: capture the same
+review cases without a skill, with the current skill, and with a candidate edit;
+record evidence-backed human judgments; compare improvements, regressions and
+unjudged cases separately. It includes ten public synthetic `critical-review`
+cases, runner execution, content-hashed run snapshots, assessment templates and
+Markdown comparisons. It does not produce a productivity score or automatically
+change a skill. See [the evaluation guide](docs/skill-evaluation.md) for real-run
+commands and a no-cost scripted smoke test.
+
+Keep raw answers and assessments in ignored `work/` files. Public cases must be
+authored without private logs; inspect a bounded private sample locally only when
+a specific failure cannot otherwise be explained.
 
 ## Initialize a portable blog workflow
 

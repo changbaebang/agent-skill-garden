@@ -46,7 +46,7 @@ def main() -> int:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)
         return 1
-    print(f"Validated {len(cases)} synthetic routing cases.")
+    print(f"Validated {len(cases)} synthetic routing case definitions; no agent was run.")
     return 0
 
 

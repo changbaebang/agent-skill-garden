@@ -31,4 +31,11 @@ Treat private configurations as evidence, not as a publish source.
 Do not preserve private identifiers as comments or examples. Do not rely on a
 replacement script to make copied private content safe.
 
+For a change intended to improve judgment, use the repository's
+[behavioral evaluation loop](../../../docs/skill-evaluation.md) when a runnable
+case exists. Compare current and candidate snapshots under matched conditions,
+inspect regressions and unjudged cases, and keep a separate final-check set.
+Static validation or invocation counts alone do not establish better decisions.
+Model-backed evaluation must fit the user's authorized tools and usage budget.
+
 Read [references/promotion-contract.md](references/promotion-contract.md).
