@@ -14,8 +14,11 @@ cases authored from scratch. No private work records are included. These are
 small authored fixtures, not a validated benchmark. Inputs provide source code
 and external contracts; expected verdicts belong only in the human criteria.
 Repository validation discovers all JSON definitions under `evals/suites/`,
-including nested directories, and rejects malformed suites. Other JSON files
-under `evals/` may use different formats and are not treated as behavioral suites.
+including nested directories, and rejects malformed suites. At the top level of
+`evals/`, only `routing.json` is allowed; a misplaced JSON file fails with migration
+guidance. Put other definition formats in named directories such as
+`evals/schemas/`, with their own validators. Keep captured runs and assessments in
+ignored `work/`, rather than among public definitions.
 
 ## 1. Run one condition
 
@@ -110,17 +113,26 @@ Only the first 1,000,000 stdout bytes and last 8,192 stderr bytes are retained i
 memory; excess output is discarded while the runner continues until completion
 or its deadline. Input delivery and both output streams are serviced concurrently,
 so a runner that delays reading stdin cannot block output capture or the timeout.
-The same deadline covers output pipes inherited by child processes. Timeout or
-interruption cleanup targets the runner's process group before its leader is
-reaped. Once the runner has exited and its output pipes have closed, the harness
-does not promise to clean up detached descendants; use runner-level isolation
-for that boundary.
+The same deadline covers output pipes inherited by child processes. A supervisor
+stays alive in the attempt's process group and reports the actual runner's exit
+status over a dedicated pipe. On success, error, timeout or interruption, the
+harness kills that group before reaping the supervisor. Descendants that merely
+close their standard streams therefore still receive cleanup. The recorded
+`exit_code` belongs to the runner; it is `null` if its status was not observed
+before termination, rather than the supervisor's kill status. A runner status
+already observed is retained even if inherited output pipes later time out.
+Unexpected supervisor exit or cleanup failure is an error. Processes that escape
+the group with `setsid`/`setpgid` or change privileges remain outside this cleanup
+boundary; use runner-level isolation when you need a security sandbox.
 
 The suite, snapshots and hashes are checked before any runner is invoked. The
 requested output and a companion `<output>.journal.jsonl` are reserved without
-overwriting existing files. If journal setup conflicts, the harness removes only
-the empty output it just reserved and invokes no runner; existing files remain
-untouched. The append-only journal records the experiment
+overwriting existing files. Give the experiment exclusive ownership of these
+paths: concurrent renaming or replacement is unsupported. If journal setup
+conflicts, no runner is invoked. The harness checks the empty output's inode
+before removing its own reservation as a best-effort cleanup; that check and
+unlink are not atomic and cannot protect against concurrent path replacement.
+The append-only journal records the experiment
 header, attempt starts and finishes, and completion or failure, flushing each
 event to disk. Completed attempts, including errors and timeouts, therefore
 survive a later harness failure. An interrupted attempt may have only its start
@@ -146,6 +158,15 @@ its omission. Leave disputed or unchecked judgments as `unjudged`. Optional
 The same process applies to baseline and candidate runs. Do not edit the run file
 or the assessment's criteria. An assessment is bound to the exact run hash.
 
+Suite, run and assessment formats have separate versions: currently 1, 2 and 1.
+Earlier version-1 captures remain readable and assessable with a legacy-format
+notice when their recorded fields validate. If the selected-suite fingerprint
+is absent, it is derived from the embedded suite in memory. The original run
+file, fields and hash are preserved. Two version-1 captures can still be compared
+when their harness and other conditions match; mixing run versions or harness
+revisions is rejected. Create fresh matched captures for a new experiment rather
+than relabeling old evidence as a new format.
+
 The rubric separately asks whether known defects were detected, resolved issues
 were repeated, a pre-existing issue was misclassified, or a claim exceeded the
 evidence. These are case-level judgments, **not precision/recall over all possible
@@ -165,34 +186,44 @@ python3 scripts/skill_eval.py compare \
 
 Also compare the baseline against the current skill to check that added guidance
 has value at all. Comparisons require matching harness, model, environment, runner
-identity, split, repetition count, timeout and synthetic/runner kind. Suite
+identity, run format, split, repetition count, timeout and synthetic/runner kind. Suite
 compatibility covers the selected cases and their criteria. The full suite is
 retained and hashed for audit, but adding untouched holdout cases does not
 invalidate earlier calibration comparisons. Changing a selected input or rubric
-requires fresh matched runs.
+requires fresh matched runs. Version-2 captures sort selected cases by case ID for
+both execution and comparison, so reordering cases alone does not change the
+selected fingerprint or invocation order. The full-suite snapshot preserves the
+original order for audit.
 
-The two run hashes and the effective skill contents must differ. Comparing one
-captured answer against itself, or changing only a skill directory's name,
-cannot establish a skill improvement. Differences between judgments of the same
-answer are reviewer disagreement and must be reconciled separately. These guards
-do not establish causality by themselves; repeated runs and human review remain
-necessary.
+The two run hashes must differ: comparing one capture against itself is rejected.
+Independently capture the same skill again to inspect variation in execution and
+human judgments. With matching skill contents, comparison automatically emits a
+**SAME-SKILL VARIABILITY** report; directory-name changes do not make a new skill.
+It reports verdict transitions without calling them skill improvements. For
+example, repeat the current-skill command into `work/eval/current-repeat.json`,
+assess that fresh capture, then compare it with `work/eval/current.json` using
+their respective assessments. No extra comparison flag is needed.
+
+Different judgments of the same captured answer remain reviewer disagreement;
+reconcile those manually rather than passing that one run twice. Neither
+comparison mode establishes causality by itself. Repeated runs and human review
+remain necessary to judge whether a skill change exceeds ordinary variation.
 
 Prompt JSON uses a canonical object-key order, so reordering input keys alone
 does not change the bytes sent to the runner. Each attempt records the full
 `prompt_sha256` and a separate `input_sha256` for the prompt without skill content.
 Run validation recomputes both hashes, and comparison requires matching input
-hashes for each case/trial while requiring a change to the skill contents.
+hashes for each case/trial. The skill contents determine which report mode applies.
 
 Each check/trial is classified as:
 
-| Before → after | Meaning |
-| --- | --- |
-| fail → pass | improved |
-| pass → fail | regressed |
-| pass → pass | unchanged_pass |
-| fail → fail | unchanged_fail; the known failure remains |
-| unjudged or execution failure on either side | inconclusive |
+| Before → after | Changed skill | Same skill, fresh capture |
+| --- | --- | --- |
+| fail → pass | improved | fail_to_pass |
+| pass → fail | regressed | pass_to_fail |
+| pass → pass | unchanged_pass | unchanged_pass |
+| fail → fail | unchanged_fail; the known failure remains | unchanged_fail |
+| unjudged or execution failure on either side | inconclusive | inconclusive |
 
 Reports keep calibration and holdout counts separate and list every compared
 check. They show successful/total attempts, total elapsed time including failures,
@@ -201,7 +232,8 @@ and money are unavailable in this protocol, not zero. No composite score is
 calculated, and regressions remain visible even if another case improves.
 
 Exit codes: `0` means the command completed (not that quality passed); `1` means
-the comparison found a judged regression with `--fail-on-regression`; `2` means
+the comparison found a judged pass-to-fail transition with `--fail-on-regression`,
+including in same-skill variability mode; `2` means
 invalid input, incompatible runs, or an output conflict. An all-unjudged report
 completes with code 0 and explicitly says inconclusive; it is not a merge gate.
 
@@ -209,7 +241,8 @@ completes with code 0 and explicitly says inconclusive; it is not a merge gate.
 
 1. Start with a demonstrated failure; make a public-safe reproduction with raw
    inputs and an independently checked criterion.
-2. Run baseline/current conditions on calibration cases. Explain one failure.
+2. Run baseline/current conditions on calibration cases. Explain one failure;
+   capture the same condition again when you need to inspect ordinary variation.
 3. Make the smallest justified skill edit. Compare current/candidate under the
    same conditions, including repeated runs and human review effort.
 4. Freeze that candidate, then run and assess both conditions with `--split

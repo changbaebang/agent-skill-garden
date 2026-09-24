@@ -210,7 +210,9 @@ record evidence-backed human judgments; compare improvements, regressions and
 unjudged cases separately. It includes ten public synthetic `critical-review`
 cases, runner execution, content-hashed run snapshots, assessment templates and
 Markdown comparisons. It does not produce a productivity score or automatically
-change a skill. See [the evaluation guide](docs/skill-evaluation.md) for real-run
+change a skill. Fresh captures of the same skill produce a separate variability
+report, helping check how much verdicts move before attributing a difference to
+a skill edit. See [the evaluation guide](docs/skill-evaluation.md) for real-run
 commands and a no-cost scripted smoke test.
 
 Keep raw answers and assessments in ignored `work/` files. Public cases must be

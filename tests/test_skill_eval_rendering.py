@@ -48,6 +48,28 @@ class SkillEvaluationRenderingTests(unittest.TestCase):
         original = "입력과 실제 결과를 확인했습니다. 2회 중 1회 실패했습니다."
         self.assertEqual(EVAL.md(original), original)
 
+    def test_bullet_text_preserves_identifiers_and_uses_readable_markdown_escapes(self):
+        original = "account_id code `y` star *z* under _w_ [link](bad) ~~gone~~"
+        rendered = EVAL.md_text(original)
+        self.assertEqual(rendered, "account_id code \\`y\\` star \\*z\\* under \\_w\\_ "
+                                  "\\[link\\](bad) \\~\\~gone\\~\\~")
+        self.assertNotIn("&#", rendered)
+
+    def test_bullet_text_blocks_html_and_new_blocks_without_double_decoding(self):
+        original = '<img src=x onerror="boom"> &lt;script&gt;\n# forged\u2028| cell |\u2029- item'
+        rendered = EVAL.md_text(original)
+        self.assertNotIn("<", rendered)
+        self.assertNotIn(">", rendered)
+        self.assertEqual(len(rendered.splitlines()), 1)
+        self.assertIn("&amp;lt;script&amp;gt;", rendered)
+        self.assertIn(" # forged \\| cell \\| - item", rendered)
+
+    def test_backslashes_do_not_disable_bullet_markdown_escaping(self):
+        for count in range(5):
+            with self.subTest(backslashes=count):
+                self.assertEqual(EVAL.md_text("\\" * count + "*text*"),
+                                 "\\" * (count * 2 + 1) + "*text\\*")
+
 
 if __name__ == "__main__":
     unittest.main()

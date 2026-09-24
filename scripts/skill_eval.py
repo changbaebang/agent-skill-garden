@@ -24,7 +24,9 @@ from contextlib import contextmanager
 from pathlib import Path
 
 
-VERSION = 1
+SUITE_VERSION = 1
+RUN_VERSION = 2
+ASSESSMENT_VERSION = 1
 SPLITS = ("calibration", "holdout")
 VERDICTS = ("pass", "fail", "unjudged")
 MAX_OUTPUT = 1_000_000
@@ -82,7 +84,9 @@ def suite_at(path: Path) -> dict:
 
 
 def selected_cases(suite: dict, split: str) -> list[dict]:
-    return [case for case in suite["cases"] if split == "all" or case["split"] == split]
+    # Canonicalize the actual execution order as well as the comparison hash.
+    return sorted((case for case in suite["cases"]
+                   if split == "all" or case["split"] == split), key=lambda case: case["id"])
 
 
 def selected_suite_hash(suite: dict, split: str) -> str:
@@ -90,9 +94,20 @@ def selected_suite_hash(suite: dict, split: str) -> str:
                    "cases": selected_cases(suite, split)})
 
 
+def comparison_suite_hash(record: dict) -> str:
+    if record["version"] == 1:
+        # Legacy runners executed the source order. Derive a missing fingerprint
+        # without modifying the original record or the hash binding assessments.
+        suite = record["suite"]
+        cases = [case for case in suite["cases"]
+                 if record["split"] == "all" or case["split"] == record["split"]]
+        return digest({"version": suite["version"], "id": suite["id"], "cases": cases})
+    return record["selected_suite_sha256"]
+
+
 def validate_suite(suite: dict) -> None:
     require(isinstance(suite, dict), "suite must be an object")
-    require(suite.get("version") == VERSION, "unsupported suite version")
+    require(suite.get("version") == SUITE_VERSION, "unsupported suite version")
     require(identifier(suite.get("id")), "suite needs an id")
     cases = suite.get("cases")
     require(isinstance(cases, list) and bool(cases), "suite needs cases")
@@ -199,7 +214,11 @@ def runner_stamps(identity: dict) -> dict:
     """Cheap drift signals between calls; full content hashes still bookend a run."""
     stamps = {}
     for index in identity["files"]:
-        stat = Path(identity["command"][int(index)]).stat()
+        try:
+            stat = Path(identity["command"][int(index)]).stat()
+        except OSError as error:
+            raise ValueError("runner files changed or became unavailable; "
+                             "completed attempts remain in the run journal") from error
         stamps[index] = (stat.st_dev, stat.st_ino, stat.st_size,
                          stat.st_mtime_ns, stat.st_ctime_ns, stat.st_mode)
     return stamps
@@ -213,7 +232,8 @@ def capture_outputs(path: Path, journal_path: Path):
         try:
             journal = journal_path.open("x", encoding="utf-8")
         except BaseException:
-            # Do not remove a file another process put at this path meanwhile.
+            # Best-effort ownership check, not atomic with unlink. Output paths
+            # require exclusive ownership; concurrent replacement is unsupported.
             try:
                 current = path.lstat()
                 if (current.st_dev, current.st_ino) == (owned.st_dev, owned.st_ino):
@@ -229,24 +249,53 @@ def execute(command: list[str], prompt: str, timeout: float) -> dict:
     started = time.monotonic()
     deadline = started + timeout
     pending = memoryview(prompt.encode())
-    # Drain all three pipes concurrently without writing runner output to disk.
+    # Drain input, output and supervisor pipes without writing output to disk.
     # Capture only a bounded stdout prefix and stderr tail, even for noisy CLIs.
+    # A live supervisor reserves the process group after the runner exits. Its
+    # private pipe carries the runner's status; descendants never inherit it.
+    supervisor = """
+import json, os, signal, subprocess, sys
+control = int(sys.argv[1])
+runner = None
+try:
+    runner = subprocess.Popen(sys.argv[2:], close_fds=True)
+except OSError as error:
+    outcome = {"exit_code": None, "error": str(error)}
+for fd in (0, 1, 2):
+    os.close(fd)
+if runner is not None:
+    outcome = {"exit_code": runner.wait(), "error": ""}
+message = (json.dumps(outcome) + "\\n").encode()
+while message:
+    message = message[os.write(control, message):]
+os.close(control)
+while True:
+    signal.pause()
+"""
     with tempfile.TemporaryDirectory(prefix="garden-eval-") as cwd:
+        read_fd, write_fd = os.pipe()
+        control = os.fdopen(read_fd, "rb", buffering=0)
         try:
-            process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                       stderr=subprocess.PIPE, cwd=cwd, start_new_session=True)
+            process = subprocess.Popen(
+                [sys.executable, "-I", "-c", supervisor, str(write_fd), *command],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                pass_fds=(write_fd,), cwd=cwd, start_new_session=True)
         except OSError as error:
+            control.close()
             return {"status": "error", "elapsed_seconds": time.monotonic() - started,
                     "answer": "", "error": str(error), "exit_code": None,
                     "stdout_truncated": False, "stderr_truncated": False}
+        finally:
+            os.close(write_fd)
         status = "ok"
-        captured = {"stdout": bytearray(), "stderr": bytearray()}
-        sizes = {"stdout": 0, "stderr": 0}
+        captured = {"stdout": bytearray(), "stderr": bytearray(), "control": bytearray()}
+        sizes = {"stdout": 0, "stderr": 0, "control": 0}
+        cleanup_error = ""
         written = 0
         try:
             with selectors.DefaultSelector() as streams:
-                for name in ("stdin", "stdout", "stderr"):
-                    stream = getattr(process, name)
+                for name in ("stdin", "stdout", "stderr", "control"):
+                    stream = control if name == "control" else getattr(process, name)
                     os.set_blocking(stream.fileno(), False)
                     if name == "stdin" and not pending:
                         stream.close()
@@ -282,35 +331,56 @@ def execute(command: list[str], prompt: str, timeout: float) -> dict:
                         sizes[name] += len(block)
                         if name == "stdout":
                             captured[name].extend(block[:max(0, MAX_OUTPUT - len(captured[name]))])
+                        elif name == "control":
+                            captured[name].extend(block[:max(0, 65536 - len(captured[name]))])
                         else:
                             captured[name].extend(block)
                             del captured[name][:-MAX_STDERR]
-                if status == "ok":
-                    try:
-                        process.wait(timeout=max(0, deadline - time.monotonic()))
-                    except subprocess.TimeoutExpired:
-                        status = "timeout"
         finally:
-            # Signal only while the unreaped child still reserves this PID.
-            # After wait() reaps it, that number may name an unrelated group.
-            # Normal completion cannot guarantee cleanup of surviving children.
-            if process.returncode is None:
-                try:
+            # The live leader reserves the PGID on every path. No poll()/wait()
+            # is allowed before this signal, including after successful output.
+            try:
+                if process.returncode is None:
                     os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            process.wait()
-            for stream in (process.stdin, process.stdout, process.stderr):
-                stream.close()
+            except ProcessLookupError:
+                pass
+            except OSError as error:
+                cleanup_error = f"Process-group cleanup failed: {error}"
+                # Reap our own supervisor even if group signaling was denied.
+                process.kill()
+            finally:
+                process.wait()
+                for stream in (process.stdin, process.stdout, process.stderr, control):
+                    stream.close()
         answer = captured["stdout"].decode("utf-8", errors="replace")
         errors = captured["stderr"].decode("utf-8", errors="replace")
+        # If group termination cut off the private status message, the runner's
+        # exit code is unknown. The supervisor's SIGKILL is not the runner's code.
+        exit_code = None
+        try:
+            require(sizes["control"] <= 65536, "supervisor status exceeds its limit")
+            outcome = json.loads(captured["control"])
+            require(isinstance(outcome, dict) and isinstance(outcome.get("error"), str)
+                    and (outcome.get("exit_code") is None or type(outcome["exit_code"]) is int),
+                    "invalid supervisor status")
+            exit_code = outcome["exit_code"]
+            if outcome["error"]:
+                errors += ("\n" if errors else "") + outcome["error"]
+        except (ValueError, KeyError, UnicodeError):
+            if status == "ok":
+                status = "error"
+                errors += ("\n" if errors else "") + "Supervisor exited without a valid runner status."
+        if cleanup_error:
+            if status == "ok":
+                status = "error"
+            errors += ("\n" if errors else "") + cleanup_error
         stdout_truncated = sizes["stdout"] > MAX_OUTPUT
-        if status == "ok" and (process.returncode != 0 or not answer.strip()):
+        if status == "ok" and (exit_code != 0 or not answer.strip()):
             status = "error"
         if status == "ok" and stdout_truncated:
             status = "output_limit"
         return {"status": status, "elapsed_seconds": time.monotonic() - started,
-                "answer": answer, "error": errors, "exit_code": process.returncode,
+                "answer": answer, "error": errors, "exit_code": exit_code,
                 "stdout_truncated": stdout_truncated,
                 "stderr_truncated": sizes["stderr"] > MAX_STDERR}
 
@@ -333,7 +403,7 @@ def run(args: argparse.Namespace) -> None:
     # Fail on serialization and snapshot errors before making any runner calls.
     prompts = [(case, prompt_for(case, skill), input_hash(case)) for case in cases]
     metadata = {
-        "version": VERSION, "kind": "synthetic" if args.synthetic else "runner",
+        "version": RUN_VERSION, "kind": "synthetic" if args.synthetic else "runner",
         "harness_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "created_at": datetime.now(timezone.utc).isoformat(), "label": args.label,
         "suite": suite, "suite_sha256": digest(suite), "skill": skill,
@@ -361,7 +431,7 @@ def run(args: argparse.Namespace) -> None:
             for trial in range(1, args.repeat + 1):
                 for case, prompt, source_hash in prompts:
                     require(stamps == runner_stamps(identity),
-                            "runner files changed during execution")
+                            "runner files changed during execution; completed attempts remain in the run journal")
                     event("attempt_started", case_id=case["id"], trial=trial)
                     print(f"Running {case['id']} trial {trial}", file=sys.stderr)
                     result = execute(command, prompt, args.timeout)
@@ -370,7 +440,13 @@ def run(args: argparse.Namespace) -> None:
                            "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(), **result}
                     event("attempt_finished", result=row)
                     rows.append(row)
-            require(identity == runner_identity(command), "runner files changed during execution")
+            try:
+                final_identity = runner_identity(command)
+            except (OSError, ValueError) as error:
+                raise ValueError("runner files changed or became unavailable; "
+                                 "completed attempts remain in the run journal") from error
+            require(identity == final_identity,
+                    "runner files changed during execution; completed attempts remain in the run journal")
             record = {**metadata, "state": "complete", "results": rows}
             record["sha256"] = digest(record)
             json.dump(record, output, ensure_ascii=False, indent=2, allow_nan=False)
@@ -404,7 +480,8 @@ def read_run(path: Path) -> dict:
     signature = record.pop("sha256", None)
     require(signature == digest(record), "run changed after capture or is missing its hash")
     record["sha256"] = signature
-    require(record.get("version") == VERSION, "unsupported run version")
+    require(type(record.get("version")) is int and record["version"] in (1, RUN_VERSION),
+            f"unsupported run version {record.get('version')!r}; supported run versions: 1, {RUN_VERSION}")
     require(record.get("kind") in ("runner", "synthetic"), "invalid run kind")
     validate_suite(record["suite"])
     require(record.get("suite_sha256") == digest(record["suite"]), "suite hash mismatch")
@@ -412,8 +489,15 @@ def read_run(path: Path) -> dict:
     require(record.get("split") in (*SPLITS, "all"), "invalid run split")
     require(type(record.get("repeat")) is int and 1 <= record["repeat"] <= 20,
             "invalid repetition count")
-    require(record.get("selected_suite_sha256") == selected_suite_hash(record["suite"], record["split"]),
-            "selected suite hash mismatch")
+    if record["version"] == 1:
+        if "selected_suite_sha256" in record:
+            require(record["selected_suite_sha256"] == comparison_suite_hash(record),
+                    "selected suite hash mismatch")
+        print("Reading legacy run version 1; preserving captured evidence and hashes. "
+              "Cross-harness comparisons remain disabled.", file=sys.stderr)
+    else:
+        require(record.get("selected_suite_sha256") == selected_suite_hash(record["suite"], record["split"]),
+                "selected suite hash mismatch")
     cases = {c["id"]: c for c in selected_cases(record["suite"], record["split"])}
     prompt_hashes = {key: hashlib.sha256(prompt_for(case, record["skill"]).encode()).hexdigest()
                      for key, case in cases.items()}
@@ -438,7 +522,7 @@ def read_run(path: Path) -> dict:
 def assessment_template(record: dict) -> dict:
     cases = {c["id"]: c for c in record["suite"]["cases"]}
     return {
-        "version": VERSION, "run_sha256": record["sha256"], "reviewer": "",
+        "version": ASSESSMENT_VERSION, "run_sha256": record["sha256"], "reviewer": "",
         "assessments": [
             {"case_id": row["case_id"], "trial": row["trial"], "review_minutes": None,
              "checks": {c["id"]: {"criterion": c["criterion"],
@@ -451,7 +535,7 @@ def assessment_template(record: dict) -> dict:
 
 def judgments(record: dict, path: Path | None) -> dict:
     value = load(path) if path else assessment_template(record)
-    require(value.get("version") == VERSION, "unsupported assessment version")
+    require(value.get("version") == ASSESSMENT_VERSION, "unsupported assessment version")
     require(value.get("run_sha256") == record["sha256"], "assessment belongs to another run")
     expected = {(r["case_id"], r["trial"]): r for r in record["results"]}
     cases = {c["id"]: c for c in record["suite"]["cases"]}
@@ -487,28 +571,51 @@ def md(value: object) -> str:
     return "".join(" " if char.isspace() else escapes.get(char, char) for char in str(value))
 
 
+def md_text(value: object) -> str:
+    """Keep paragraph/bullet source readable without enabling HTML or block injection."""
+    text = str(value)
+    escapes = {"&": "&amp;", "<": "&lt;", ">": "&gt;", "\\": "\\\\", "|": "\\|",
+               "`": "\\`", "*": "\\*", "[": "\\[", "]": "\\]", "~": "\\~"}
+    pieces = []
+    for index, char in enumerate(text):
+        if char.isspace():
+            pieces.append(" ")
+        elif char == "_" and not (index > 0 and index + 1 < len(text)
+                                  and text[index - 1].isalnum() and text[index + 1].isalnum()):
+            pieces.append("\\_")
+        else:
+            pieces.append(escapes.get(char, char))
+    return "".join(pieces)
+
+
 def compare(before: dict, after: dict, left: dict, right: dict) -> tuple[str, bool]:
     require(before.get("state") == after.get("state") == "complete",
             "only complete runs can be assessed or compared")
     require(before["sha256"] != after["sha256"], "incomparable runs: same captured run")
-    require(digest(before["skill"]["files"]) != digest(after["skill"]["files"]),
-            "incomparable runs: identical skill content; no skill change to evaluate")
-    for field in ("harness_sha256", "selected_suite_sha256", "model", "environment", "runner_identity", "repeat", "split",
+    same_skill = digest(before["skill"]["files"]) == digest(after["skill"]["files"])
+    for field in ("version", "harness_sha256", "model", "environment", "runner_identity", "repeat", "split",
                   "timeout_seconds", "kind"):
         require(before[field] == after[field], f"incomparable runs: {field} differs")
+    require(comparison_suite_hash(before) == comparison_suite_hash(after),
+            "incomparable runs: selected_suite_sha256 differs")
     cases = {c["id"]: c for c in before["suite"]["cases"]}
     later = {(r["case_id"], r["trial"]): r for r in after["results"]}
-    summary = {split: dict.fromkeys(("improved", "regressed", "unchanged_pass", "unchanged_fail", "inconclusive"), 0)
+    positive, negative = ("fail_to_pass", "pass_to_fail") if same_skill else ("improved", "regressed")
+    summary = {split: dict.fromkeys((positive, negative, "unchanged_pass", "unchanged_fail", "inconclusive"), 0)
                for split in SPLITS}
     lines = ["# Skill evaluation comparison", ""]
+    if same_skill:
+        lines += ["**SAME-SKILL VARIABILITY: separate captures with identical skill content.**",
+                  "Transitions describe observed run and judgment variability, not skill improvement. "
+                  "They do not distinguish model variation from reviewer disagreement.", ""]
     if before["kind"] == "synthetic":
         lines += ["**SYNTHETIC: scripted plumbing demonstration, not model-quality evidence.**", ""]
-    lines += [f"Before: {md(before['label'])}; after: {md(after['label'])}.",
-              f"Selected cases: `{before['selected_suite_sha256']}`.",
+    lines += [f"Before: {md_text(before['label'])}; after: {md_text(after['label'])}.",
+              f"Selected cases: `{comparison_suite_hash(before)}`.",
               f"Full suite snapshots: `{before['suite_sha256']}` → `{after['suite_sha256']}`.",
               f"Before run: `{before['sha256']}`; after run: `{after['sha256']}`.",
               f"Skill snapshots: `{before['skill_sha256']}` → `{after['skill_sha256']}`.",
-              f"Declared model: {md(before['model'])}; environment: {md(before['environment'])}.",
+              f"Declared model: {md_text(before['model'])}; environment: {md_text(before['environment'])}.",
               "", "Each row compares a rubric check in one trial. No overall productivity score.",
               "A matching declaration does not verify a provider's actual model or host isolation.",
               "", "| Split | Case / trial | Check | Before | After | Change |",
@@ -527,7 +634,7 @@ def compare(before: dict, after: dict, left: dict, right: dict) -> tuple[str, bo
             elif a == b:
                 change = f"unchanged_{a}"
             else:
-                change = "improved" if b == "pass" else "regressed"
+                change = positive if b == "pass" else negative
             summary[case["split"]][change] += 1
             a = a if old["status"] == "ok" else old["status"]
             b = b if new["status"] == "ok" else new["status"]
@@ -553,24 +660,26 @@ def compare(before: dict, after: dict, left: dict, right: dict) -> tuple[str, bo
               "## Assessment evidence", ""]
     for name, grades in (("Before", left), ("After", right)):
         reviewers = sorted({r["reviewer"] for r in grades.values() if r["reviewer"]})
-        lines.append(f"- {name} reviewer declaration: {md(', '.join(reviewers)) or 'unassigned'}.")
+        lines.append(f"- {name} reviewer declaration: {md_text(', '.join(reviewers)) or 'unassigned'}.")
         for key, row in grades.items():
             for check_id, grade in row["checks"].items():
                 if grade["verdict"] != "unjudged":
-                    lines.append(f"- {name}, {md(key[0])}/{key[1]}, {md(check_id)}: "
-                                 f"{md(grade['note'])}")
+                    lines.append(f"- {name}, {md_text(key[0])}/{key[1]}, {md_text(check_id)}: "
+                                 f"{md_text(grade['note'])}")
     lines += ["", "## Criteria", ""]
     for case_id in sorted({key[0] for key in left}):
         for check in cases[case_id]["checks"]:
-            lines.append(f"- {md(case_id)} / {md(check['id'])}: {md(check['criterion'])}")
+            lines.append(f"- {md_text(case_id)} / {md_text(check['id'])}: {md_text(check['criterion'])}")
     lines += ["", "## Interpretation", "",
-              "Review regressions and missing evidence before adopting a skill change. "
+              ("Use these separate captures to inspect baseline variability before attributing differences to a skill change. "
+               if same_skill else "Review regressions and missing evidence before adopting a skill change. ") +
               "Use calibration cases for edits and untouched cases for final checks. "
               "The bundled holdout is public, so it is not a secret or leakage-proof benchmark. "
               "Repeat runs to inspect variability; these counts are not significance tests. "
               "A lack of new regressions is not a quality pass; inspect unchanged_fail too. "
+              "With --fail-on-regression, any observed pass-to-fail transition returns exit 1 in either mode. "
               "Do not infer production impact, time saved, or autonomous tool safety from this report.", ""]
-    return "\n".join(lines), any(c["regressed"] for c in summary.values())
+    return "\n".join(lines), any(c[negative] for c in summary.values())
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -28,7 +28,7 @@ class SkillCaptureRegressionTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.suite = self.root / "suite.json"
         self.suite_value = {
-            "version": EVAL.VERSION,
+            "version": EVAL.SUITE_VERSION,
             "id": "capture-fixture",
             "cases": [{
                 "id": "one", "split": "calibration", "task": "Review the change.",

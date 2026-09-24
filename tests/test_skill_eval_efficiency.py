@@ -77,7 +77,7 @@ class SkillEvaluationEfficiencyTests(unittest.TestCase):
         self.assertFalse(args.out.exists())
         self.assertEqual(journal.read_bytes(), original)
 
-    def test_failed_setup_does_not_unlink_another_files_replacement_inode(self):
+    def test_failed_setup_preserves_replacement_visible_before_ownership_check(self):
         output = self.root / "race.json"
         journal = self.root / "race.json.journal.jsonl"
         replacement = self.root / "replacement.json"
@@ -109,11 +109,19 @@ class SkillEvaluationEfficiencyTests(unittest.TestCase):
         self.assertEqual(identity.call_count, 2)
         self.assertEqual(len(EVAL.read_run(args.out)["results"]), 40)
 
-    def test_file_metadata_drift_stops_before_the_next_runner_call(self):
+    def test_same_size_edit_with_restored_mtime_stops_before_the_next_runner_call(self):
         args = self.args()
+        original = self.runner.read_bytes()
+        before = self.runner.stat()
 
         def change_runner(*_):
-            self.runner.write_text("print('A changed runner with a different size.')\n", encoding="utf-8")
+            self.runner.write_bytes(original.replace(b"Scripted", b"Modified"))
+            os.utime(self.runner, ns=(before.st_atime_ns, before.st_mtime_ns))
+            after = self.runner.stat()
+            self.assertEqual(after.st_size, before.st_size)
+            self.assertEqual(after.st_ino, before.st_ino)
+            self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
+            self.assertNotEqual(after.st_ctime_ns, before.st_ctime_ns)
             return self.answer()
 
         with mock.patch.object(EVAL, "execute", side_effect=change_runner) as execute, self.quiet(), \
@@ -126,6 +134,27 @@ class SkillEvaluationEfficiencyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             EVAL.read_run(args.out)
 
+    def test_deleted_runner_reports_drift_and_preserves_completed_answers(self):
+        for delete_on in (1, 4):
+            with self.subTest(delete_on=delete_on):
+                self.runner.write_text("print('Scripted fixture answer.')\n", encoding="utf-8")
+                args = self.args(repeat=2, out=self.root / f"deleted-{delete_on}.json")
+                calls = []
+
+                def delete_runner(*_):
+                    calls.append(True)
+                    if len(calls) == delete_on:
+                        self.runner.unlink()
+                    return self.answer()
+
+                with mock.patch.object(EVAL, "execute", side_effect=delete_runner), self.quiet(), \
+                        self.assertRaisesRegex(ValueError, "runner files changed.*run journal"):
+                    EVAL.run(args)
+                self.assertEqual(len(calls), delete_on)
+                finished = [event for event in self.events(args) if event["event"] == "attempt_finished"]
+                self.assertEqual(len(finished), delete_on)
+                self.assertEqual(args.out.read_bytes(), b"")
+
     def test_final_content_hash_drift_preserves_answers_and_blocks_comparison(self):
         args = self.args(repeat=2)
         calls = []
@@ -133,7 +162,10 @@ class SkillEvaluationEfficiencyTests(unittest.TestCase):
         def change_after_last_attempt(*_):
             calls.append(True)
             if len(calls) == 4:
-                self.runner.write_text("print('Changed during the final attempt.')\n", encoding="utf-8")
+                previous = self.runner.stat()
+                self.runner.write_bytes(self.runner.read_bytes().replace(b"Scripted", b"Modified"))
+                os.utime(self.runner, ns=(previous.st_atime_ns, previous.st_mtime_ns))
+                self.assertEqual(self.runner.stat().st_size, previous.st_size)
             return self.answer()
 
         with mock.patch.object(EVAL, "execute", side_effect=change_after_last_attempt), self.quiet(), \

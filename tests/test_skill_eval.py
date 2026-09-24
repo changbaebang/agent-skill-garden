@@ -20,7 +20,7 @@ SPEC.loader.exec_module(EVAL)
 SUITE = ROOT / "evals/suites/critical-review.json"
 
 
-class SkillEvaluationTests(unittest.TestCase):
+class SkillEvaluationFixture:
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -73,6 +73,8 @@ class SkillEvaluationTests(unittest.TestCase):
         path.write_text(json.dumps(value), encoding="utf-8")
         return path
 
+
+class SkillEvaluationTests(SkillEvaluationFixture, unittest.TestCase):
     def test_bundled_suite_matches_documented_six_four_split(self):
         suite = EVAL.suite_at(SUITE)
         counts = {split: sum(c["split"] == split for c in suite["cases"])

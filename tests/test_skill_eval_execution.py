@@ -28,7 +28,7 @@ class SkillEvaluationExecutionTests(unittest.TestCase):
             "import sys,time; sys.stdout.write('x' * 1000001); "
             "sys.stdout.flush(); time.sleep(10)", timeout=0.5)
         self.assertEqual(result["status"], "timeout")
-        self.assertEqual(result["exit_code"], -signal.SIGKILL)
+        self.assertIsNone(result["exit_code"])
         self.assertEqual(len(result["answer"]), EVAL.MAX_OUTPUT)
         self.assertTrue(result["stdout_truncated"])
         self.assertFalse(result["stderr_truncated"])
@@ -77,13 +77,26 @@ class SkillEvaluationExecutionTests(unittest.TestCase):
         self.assertFalse(result["stdout_truncated"])
         self.assertFalse(result["stderr_truncated"])
 
-    def test_reaped_runner_is_never_signaled(self):
-        # Mock the unsafe call rather than sending a signal to a reused group.
+    def test_successful_and_failed_runners_clean_group_before_supervisor_reap(self):
+        real_wait = EVAL.subprocess.Popen.wait
+        real_killpg = EVAL.os.killpg
         for exit_code in (0, 7):
-            with self.subTest(exit_code=exit_code), patch.object(EVAL.os, "killpg") as kill:
+            events = []
+
+            def wait(process, *args, **kwargs):
+                events.append(("reap-start", process.returncode))
+                return real_wait(process, *args, **kwargs)
+
+            def killpg(pid, sig):
+                events.append(("signal", sig))
+                return real_killpg(pid, sig)
+
+            with self.subTest(exit_code=exit_code), \
+                    patch.object(EVAL.subprocess.Popen, "wait", wait), \
+                    patch.object(EVAL.os, "killpg", killpg):
                 result = self.execute(f"import sys; print('answer'); sys.exit({exit_code})")
                 self.assertEqual(result["exit_code"], exit_code)
-                kill.assert_not_called()
+                self.assertEqual(events, [("signal", signal.SIGKILL), ("reap-start", None)])
 
     @unittest.skipUnless(os.name == "posix", "process groups require POSIX")
     def test_timeout_signals_group_before_reaping_runner(self):
@@ -175,8 +188,72 @@ class SkillEvaluationExecutionTests(unittest.TestCase):
         result = self.execute(
             "import os,time; os.close(1); os.close(2); time.sleep(10)", timeout=0.2)
         self.assertEqual(result["status"], "timeout")
-        self.assertEqual(result["exit_code"], -signal.SIGKILL)
+        self.assertIsNone(result["exit_code"])
         self.assertLess(result["elapsed_seconds"], 2)
+
+    @unittest.skipUnless(os.name == "posix", "process groups require POSIX")
+    def test_normal_exit_stops_grandchildren_that_closed_standard_streams(self):
+        for exit_code in (0, 7):
+            with self.subTest(exit_code=exit_code), tempfile.TemporaryDirectory() as folder:
+                ready = Path(folder) / "grandchild-ready"
+                marker = Path(folder) / "late-write"
+                grandchild = (
+                    "import os,pathlib,time\n"
+                    "for fd in (0,1,2): os.close(fd)\n"
+                    f"pathlib.Path({str(ready)!r}).touch()\n"
+                    f"time.sleep(1.2); pathlib.Path({str(marker)!r}).touch()\n")
+                child = ("import subprocess,sys; subprocess.Popen([sys.executable,'-c',"
+                         + repr(grandchild) + "])\n")
+                parent = (
+                    "import pathlib,subprocess,sys,time\n"
+                    f"subprocess.Popen([sys.executable,'-c',{child!r}], "
+                    "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+                    f"while not pathlib.Path({str(ready)!r}).exists(): time.sleep(.01)\n"
+                    f"print('answer'); sys.exit({exit_code})\n")
+                result = self.execute(parent)
+                self.assertEqual(result["status"], "ok" if exit_code == 0 else "error")
+                self.assertEqual(result["exit_code"], exit_code)
+                self.assertTrue(ready.exists(), "grandchild must have started before runner exit")
+                time.sleep(1.35)
+                self.assertFalse(marker.exists())
+
+    @unittest.skipUnless(os.name == "posix", "file descriptor inheritance requires POSIX")
+    def test_runner_does_not_inherit_private_supervisor_status_pipe(self):
+        result = self.execute(
+            "import os\n"
+            "opened=[]\n"
+            "for fd in range(3,128):\n"
+            "    try: os.fstat(fd)\n"
+            "    except OSError: continue\n"
+            "    opened.append(fd)\n"
+            "print(opened)\n")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["answer"].strip(), "[]")
+
+    @unittest.skipUnless(os.name == "posix", "signals require POSIX")
+    def test_runner_signal_exit_is_preserved_separately_from_supervisor_cleanup(self):
+        result = self.execute(
+            "import os,signal; print('answer',flush=True); os.kill(os.getpid(),signal.SIGTERM)")
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["exit_code"], -signal.SIGTERM)
+
+    @unittest.skipUnless(os.name == "posix", "signals require POSIX")
+    def test_supervisor_death_without_status_cannot_be_a_successful_answer(self):
+        result = self.execute(
+            "import os,signal,time; print('answer',flush=True); "
+            "os.kill(os.getppid(),signal.SIGTERM); time.sleep(.05)")
+        self.assertEqual(result["status"], "error")
+        self.assertIsNone(result["exit_code"])
+        self.assertIn("answer", result["answer"])
+        self.assertIn("Supervisor exited without a valid runner status", result["error"])
+        self.assertLess(result["elapsed_seconds"], 2)
+
+    def test_failed_group_cleanup_is_reported_instead_of_claiming_success(self):
+        with patch.object(EVAL.os, "killpg", side_effect=PermissionError("simulated denial")):
+            result = self.execute("print('answer')")
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["exit_code"], 0)
+        self.assertIn("Process-group cleanup failed", result["error"])
 
     @unittest.skipUnless(os.name == "posix", "process groups require POSIX")
     def test_inherited_output_pipes_cannot_outlive_deadline(self):
