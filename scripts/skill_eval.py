@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import os
+import selectors
 import signal
 import shutil
 import statistics
@@ -26,6 +27,9 @@ VERSION = 1
 SPLITS = ("calibration", "holdout")
 VERDICTS = ("pass", "fail", "unjudged")
 MAX_OUTPUT = 1_000_000
+MAX_STDERR = 8192
+MAX_SKILL_FILE = 1_000_000
+MAX_SKILL_TOTAL = 4_000_000
 
 
 def require(condition: bool, message: str) -> None:
@@ -38,9 +42,15 @@ def digest(value: object) -> str:
     return hashlib.sha256(data.encode()).hexdigest()
 
 
+def reject_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON value: {value}")
+
+
 def load(path: Path) -> dict:
-    value = json.loads(path.read_text(encoding="utf-8"))
+    value = json.loads(path.read_text(encoding="utf-8"), parse_constant=reject_constant)
     require(isinstance(value, dict), f"{path.name}: expected an object")
+    # JSON exponents such as 1e999 can overflow without invoking parse_constant.
+    digest(value)
     return value
 
 
@@ -104,10 +114,24 @@ def skill_at(path: str) -> dict:
     folder = Path(path).resolve()
     require((folder / "SKILL.md").is_file(), "skill directory needs SKILL.md")
     files = {}
-    for entry in sorted(folder.rglob("*.md")):
+    total = 0
+    for entry in sorted(folder.rglob("*")):
         require(not entry.is_symlink() and folder in entry.resolve().parents,
-                "skill references must stay inside the skill directory")
-        files[str(entry.relative_to(folder))] = entry.read_text(encoding="utf-8")
+                f"skill references must stay inside the skill directory: {entry.name}")
+        if entry.is_dir():
+            continue
+        name = str(entry.relative_to(folder))
+        require(entry.is_file(), f"unsupported non-regular skill file: {name}")
+        with entry.open("rb") as handle:
+            raw = handle.read(MAX_SKILL_FILE + 1)
+        require(len(raw) <= MAX_SKILL_FILE, f"skill file exceeds {MAX_SKILL_FILE} bytes: {name}")
+        total += len(raw)
+        require(total <= MAX_SKILL_TOTAL, f"skill snapshot exceeds {MAX_SKILL_TOTAL} bytes: {name}")
+        require(b"\x00" not in raw, f"binary skill file is unsupported: {name}")
+        try:
+            files[name] = raw.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError(f"skill file must be UTF-8 text: {name}") from error
     # Explicit snapshot: no implicit reads of linked external skills or scripts.
     return {"name": folder.name, "files": files}
 
@@ -120,14 +144,22 @@ def prompt_for(case: dict, skill: dict) -> str:
         "do not publish, modify files, or contact external services. Do not search "
         "for evaluation answers. State missing evidence and limitations. Return "
         "only your final review, with concrete evidence for each finding.\n\n"
-        + json.dumps(payload, ensure_ascii=False, indent=2)
+        + json.dumps(payload, sort_keys=True, ensure_ascii=False, indent=2, allow_nan=False)
     )
+
+
+def input_hash(case: dict) -> str:
+    """Fingerprint exactly the non-skill prompt, independent of skill edits."""
+    return hashlib.sha256(prompt_for(case, {"files": {}}).encode()).hexdigest()
 
 
 def runner_identity(command: list[str]) -> dict:
     """Hash the executable and explicit file arguments, not an entire host install."""
     files = {}
+    normalized = command[:]
     for index, argument in enumerate(command):
+        if index > 0 and os.sep not in argument and not (os.altsep and os.altsep in argument):
+            continue
         name = shutil.which(argument) if index == 0 else argument
         if name and Path(name).is_file():
             path = Path(name).resolve()
@@ -138,45 +170,96 @@ def runner_identity(command: list[str]) -> dict:
             files[str(index)] = checksum.hexdigest()
             # Preserve executable symlinks: resolving a venv's python changes
             # its environment even when the underlying binary is identical.
-            command[index] = str(Path(name).absolute())
-    return {"command": command[:], "files": files}
+            normalized[index] = str(Path(name).absolute())
+    return {"command": normalized, "files": files}
 
 
 def execute(command: list[str], prompt: str, timeout: float) -> dict:
     started = time.monotonic()
-    # Files bound memory even if a runner emits excessive logs; cap what is kept.
-    with tempfile.TemporaryDirectory(prefix="garden-eval-") as cwd, \
-            tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+    deadline = started + timeout
+    pending = memoryview(prompt.encode())
+    # Drain all three pipes concurrently without writing runner output to disk.
+    # Capture only a bounded stdout prefix and stderr tail, even for noisy CLIs.
+    with tempfile.TemporaryDirectory(prefix="garden-eval-") as cwd:
         try:
-            process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=stdout,
-                                       stderr=stderr, cwd=cwd, start_new_session=True)
+            process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, cwd=cwd, start_new_session=True)
         except OSError as error:
             return {"status": "error", "elapsed_seconds": time.monotonic() - started,
-                    "answer": "", "error": str(error), "exit_code": None}
+                    "answer": "", "error": str(error), "exit_code": None,
+                    "stdout_truncated": False, "stderr_truncated": False}
         status = "ok"
+        captured = {"stdout": bytearray(), "stderr": bytearray()}
+        sizes = {"stdout": 0, "stderr": 0}
+        written = 0
         try:
-            process.communicate(prompt.encode(), timeout=timeout)
-        except subprocess.TimeoutExpired:
-            status = "timeout"
-            # Stop the whole runner process group, not just its shell parent.
-            os.killpg(process.pid, signal.SIGKILL)
-            process.communicate()
-        except BaseException:
-            if process.poll() is None:
+            with selectors.DefaultSelector() as streams:
+                for name in ("stdin", "stdout", "stderr"):
+                    stream = getattr(process, name)
+                    os.set_blocking(stream.fileno(), False)
+                    if name == "stdin" and not pending:
+                        stream.close()
+                        continue
+                    event = selectors.EVENT_WRITE if name == "stdin" else selectors.EVENT_READ
+                    streams.register(stream, event, name)
+                while streams.get_map():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        status = "timeout"
+                        break
+                    for key, _ in streams.select(remaining):
+                        stream, name = key.fileobj, key.data
+                        if name == "stdin":
+                            try:
+                                written += os.write(stream.fileno(), pending[written:written + 65536])
+                            except BrokenPipeError:
+                                written = len(pending)
+                            except BlockingIOError:
+                                continue
+                            if written == len(pending):
+                                streams.unregister(stream)
+                                stream.close()
+                            continue
+                        try:
+                            block = os.read(stream.fileno(), 65536)
+                        except BlockingIOError:
+                            continue
+                        if not block:
+                            streams.unregister(stream)
+                            stream.close()
+                            continue
+                        sizes[name] += len(block)
+                        if name == "stdout":
+                            captured[name].extend(block[:max(0, MAX_OUTPUT - len(captured[name]))])
+                        else:
+                            captured[name].extend(block)
+                            del captured[name][:-MAX_STDERR]
+                if status == "ok":
+                    try:
+                        process.wait(timeout=max(0, deadline - time.monotonic()))
+                    except subprocess.TimeoutExpired:
+                        status = "timeout"
+        finally:
+            # Stop the entire group on timeout/interruption and clean up any
+            # children left behind after their parent exits successfully.
+            try:
                 os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             process.wait()
-            raise
-        stdout.seek(0)
-        stderr.seek(0)
-        raw = stdout.read(MAX_OUTPUT + 1)
-        errors = stderr.read(8192).decode("utf-8", errors="replace")
-        answer = raw[:MAX_OUTPUT].decode("utf-8", errors="replace")
+            for stream in (process.stdin, process.stdout, process.stderr):
+                stream.close()
+        answer = captured["stdout"].decode("utf-8", errors="replace")
+        errors = captured["stderr"].decode("utf-8", errors="replace")
+        stdout_truncated = sizes["stdout"] > MAX_OUTPUT
         if status == "ok" and (process.returncode != 0 or not answer.strip()):
             status = "error"
-        if len(raw) > MAX_OUTPUT:
+        if status == "ok" and stdout_truncated:
             status = "output_limit"
         return {"status": status, "elapsed_seconds": time.monotonic() - started,
-                "answer": answer, "error": errors, "exit_code": process.returncode}
+                "answer": answer, "error": errors, "exit_code": process.returncode,
+                "stdout_truncated": stdout_truncated,
+                "stderr_truncated": sizes["stderr"] > MAX_STDERR}
 
 
 def run(args: argparse.Namespace) -> None:
@@ -185,6 +268,7 @@ def run(args: argparse.Namespace) -> None:
     command = args.runner[1:] if args.runner[:1] == ["--"] else args.runner
     require(bool(command), "provide a runner command after --")
     identity = runner_identity(command)
+    command = identity["command"]
     require(not args.out.exists(), "output already exists; choose a new path")
     require(args.repeat > 0 and args.repeat <= 20, "repeat must be 1..20")
     require(number(args.timeout) and args.timeout > 0, "timeout must be positive")
@@ -192,32 +276,77 @@ def run(args: argparse.Namespace) -> None:
             "model, environment, and label must be nonempty")
     cases = [c for c in suite["cases"] if args.split == "all" or c["split"] == args.split]
     require(bool(cases), "selected split has no cases")
-    rows = []
-    for trial in range(1, args.repeat + 1):
-        for case in cases:
-            print(f"Running {case['id']} trial {trial}", file=sys.stderr)
-            prompt = prompt_for(case, skill)
-            result = execute(command, prompt, args.timeout)
-            rows.append({"case_id": case["id"], "trial": trial,
-                         "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(), **result})
-    require(identity == runner_identity(command), "runner files changed during execution")
-    record = {
+    # Fail on serialization and snapshot errors before making any runner calls.
+    prompts = [(case, prompt_for(case, skill), input_hash(case)) for case in cases]
+    metadata = {
         "version": VERSION, "kind": "synthetic" if args.synthetic else "runner",
         "harness_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "created_at": datetime.now(timezone.utc).isoformat(), "label": args.label,
         "suite": suite, "suite_sha256": digest(suite), "skill": skill,
         "skill_sha256": digest(skill), "model": args.model,
-        "environment": args.environment, "runner": command,
+        "environment": args.environment,
         "runner_identity": identity, "repeat": args.repeat,
-        "split": args.split, "timeout_seconds": args.timeout, "results": rows,
+        "split": args.split, "timeout_seconds": args.timeout,
     }
-    record["sha256"] = digest(record)
-    save(args.out, record)
+    digest(metadata)
+    journal_path = Path(str(args.out) + ".journal.jsonl")
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    # Reserve both names before paid work; x also rejects dangling symlinks.
+    # An interrupted final file is not a run. The journal preserves completed rows.
+    with args.out.open("x", encoding="utf-8") as output, \
+            journal_path.open("x", encoding="utf-8") as journal:
+        def event(kind: str, **fields) -> None:
+            journal.write(json.dumps({"event": kind, **fields}, ensure_ascii=False,
+                                     allow_nan=False) + "\n")
+            journal.flush()
+            os.fsync(journal.fileno())
+
+        event("header", record={**metadata, "state": "running"})
+        rows = []
+        try:
+            for trial in range(1, args.repeat + 1):
+                for case, prompt, source_hash in prompts:
+                    require(identity == runner_identity(command),
+                            "runner files changed during execution")
+                    event("attempt_started", case_id=case["id"], trial=trial)
+                    print(f"Running {case['id']} trial {trial}", file=sys.stderr)
+                    result = execute(command, prompt, args.timeout)
+                    row = {"case_id": case["id"], "trial": trial,
+                           "input_sha256": source_hash,
+                           "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(), **result}
+                    event("attempt_finished", result=row)
+                    rows.append(row)
+            require(identity == runner_identity(command), "runner files changed during execution")
+            record = {**metadata, "state": "complete", "results": rows}
+            record["sha256"] = digest(record)
+            json.dump(record, output, ensure_ascii=False, indent=2, allow_nan=False)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+            event("complete", run_sha256=record["sha256"])
+        except BaseException as error:
+            # A failed flush/fsync or terminal journal write must not leave a
+            # parseable complete run. Only invalidate our own reserved file.
+            try:
+                output.seek(0)
+                output.truncate()
+                output.flush()
+                os.fsync(output.fileno())
+            except OSError:
+                pass
+            # Disk failure can also prevent this diagnostic; already fsynced
+            # attempt records remain useful without a terminal event.
+            try:
+                event("failed", error=f"{type(error).__name__}: {error}")
+            except (OSError, ValueError):
+                pass
+            raise
     print(f"Saved {len(rows)} attempts to {args.out}. Quality is unjudged.")
 
 
 def read_run(path: Path) -> dict:
     record = load(path)
+    require(record.get("state") == "complete", "only complete runs can be assessed or compared")
     signature = record.pop("sha256", None)
     require(signature == digest(record), "run changed after capture or is missing its hash")
     record["sha256"] = signature
@@ -242,6 +371,7 @@ def read_run(path: Path) -> dict:
         require(isinstance(row["answer"], str), "invalid answer")
         require(row["status"] != "ok" or bool(row["answer"].strip()), "empty successful answer")
         prompt = prompt_for(cases[key[0]], record["skill"])
+        require(row.get("input_sha256") == input_hash(cases[key[0]]), "input hash mismatch")
         require(row["prompt_sha256"] == hashlib.sha256(prompt.encode()).hexdigest(),
                 "prompt hash mismatch")
     require(seen == expected, "missing attempts; failures must not be dropped")
@@ -297,7 +427,9 @@ def md(value: object) -> str:
 
 
 def compare(before: dict, after: dict, left: dict, right: dict) -> tuple[str, bool]:
-    for field in ("harness_sha256", "suite_sha256", "model", "environment", "runner", "runner_identity", "repeat", "split",
+    require(before.get("state") == after.get("state") == "complete",
+            "only complete runs can be assessed or compared")
+    for field in ("harness_sha256", "suite_sha256", "model", "environment", "runner_identity", "repeat", "split",
                   "timeout_seconds", "kind"):
         require(before[field] == after[field], f"incomparable runs: {field} differs")
     cases = {c["id"]: c for c in before["suite"]["cases"]}
@@ -319,6 +451,8 @@ def compare(before: dict, after: dict, left: dict, right: dict) -> tuple[str, bo
     for old in before["results"]:
         key = (old["case_id"], old["trial"])
         new = later[key]
+        require(nonempty(old.get("input_sha256")) and old["input_sha256"] == new.get("input_sha256"),
+                "incomparable runs: input_sha256 differs")
         case = cases[key[0]]
         for check in case["checks"]:
             a = left[key]["checks"][check["id"]]["verdict"]

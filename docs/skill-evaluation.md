@@ -17,8 +17,11 @@ cases authored from scratch. No private work records are included.
 Run from the repository root. Choose a trusted runner that reads one prompt from
 stdin, prints only its final answer to stdout, and exits nonzero on failure.
 The command after `--` is executed once per case and repetition, without a shell.
-Arguments that are existing files are resolved relative to your starting directory.
-The harness uses a fresh temporary working directory per attempt.
+The executable is located on `PATH`. Subsequent standalone file arguments must
+include a path separator, such as `./runner.py` or an absolute path, to be
+resolved relative to your starting directory and hashed. Bare words such as
+`exec` stay unchanged even if a file has the same name. The harness uses a fresh
+temporary working directory per attempt.
 
 For example, on a Codex CLI version supporting these options:
 
@@ -62,29 +65,52 @@ No live model is invoked by repository validation or tests.
 
 ## What an attempt contains
 
-The runner receives only the task, the source snapshots, and Markdown files
-from the chosen skill directory. It does not receive check criteria, case IDs,
-split labels, previous answers, or human judgments. The skill is supplied
+The runner receives only the task, the source snapshots, and regular UTF-8 text
+files from the chosen skill directory, regardless of extension. YAML, JSON and
+script sources are included in both the prompt and the hashed snapshot; scripts
+are supplied as text and are not executed by the harness. Symbolic links,
+non-regular files, NUL bytes, invalid UTF-8, files over 1,000,000 bytes, and a
+combined snapshot over 4,000,000 bytes are rejected before runner execution with
+the affected path, rather than silently omitted. Sizes refer to raw file bytes.
+The runner does not receive check criteria, case IDs, split labels, previous
+answers, or human judgments. The skill is supplied
 explicitly: this experiment does **not** measure automatic skill discovery.
-External skill dependencies, scripts, tools and linked remote documents are not
+External skill dependencies, tools and linked remote documents are not
 automatically loaded. Keep the first experiment within the self-contained
 `critical-review` skill.
 
 The result file captures the suite and skill snapshots, their hashes, the harness
-source hash, model and
-environment declarations, runner command and hashes of its executable and explicit
-file arguments, every attempt's answer, status, elapsed time and bounded stderr.
+source hash, model and environment declarations, the runner command and hashes
+of its executable and explicit file arguments under `runner_identity`, every
+attempt's answer, status, elapsed time and the bounded tail of stderr. Truncation
+is recorded so a clipped answer or log is not mistaken for complete evidence.
 Hashing detects accidental edits, not malicious tampering or undisclosed model
 changes. Dependencies imported by an adapter are not hashed; pin them and include
 their versions in the environment declaration. Keep credentials in the host's
 credential store or environment, never in command arguments.
 
 Timeouts kill the runner process group on POSIX. An error, empty answer, or answer
-over 1 MB cannot be graded as a successful review. All completed attempts,
-including errors and timeouts, are retained. If the whole harness is interrupted
-before capture finishes, it does not create a completed run file: rerun into a
-new output and include the interrupted experiment in any broader cost analysis.
-Output files are never overwritten. Logs and answers may be sensitive; keep runs,
+over 1 MB cannot be graded as a successful review. A timeout or nonzero exit keeps
+its failure status even when its answer also exceeds the limit.
+Runner output is drained through pipes, with no temporary stdout/stderr files.
+Only the first 1,000,000 stdout bytes and last 8,192 stderr bytes are retained in
+memory; excess output is discarded while the runner continues until completion
+or its deadline. Input delivery and both output streams are serviced concurrently,
+so a runner that delays reading stdin cannot block output capture or the timeout.
+The same deadline covers output pipes inherited by child processes, and cleanup
+stops remaining members of the runner's process group.
+
+The suite, snapshots and hashes are checked before any runner is invoked. The
+requested output and a companion `<output>.journal.jsonl` are reserved without
+overwriting existing files. The append-only journal records the experiment
+header, attempt starts and finishes, and completion or failure, flushing each
+event to disk. Completed attempts, including errors and timeouts, therefore
+survive a later harness failure. An interrupted attempt may have only its start
+record. Assess and compare accept only completed run files; a failed run may
+leave an empty final output alongside its journal. There is no automatic resume:
+use a new output path and include the interrupted experiment in cost analysis.
+
+Logs and answers may be sensitive; keep runs,
 assessments and reports in the ignored `work/` directory and inspect them before
 sharing. Do not upload private logs as public evaluation cases.
 
@@ -124,6 +150,12 @@ has value at all. Comparisons require matching harness, suite, model, environmen
 identity, split, repetition count, timeout and synthetic/runner kind. A change to
 the skill snapshot is expected. A changed model or rubric needs a new matched
 experiment rather than a claimed skill improvement.
+
+Prompt JSON uses a canonical object-key order, so reordering input keys alone
+does not change the bytes sent to the runner. Each attempt records the full
+`prompt_sha256` and a separate `input_sha256` for the prompt without skill content.
+Run validation recomputes both hashes, and comparison requires matching input
+hashes for each case/trial while allowing the skill snapshot to change.
 
 Each check/trial is classified as:
 
@@ -177,6 +209,8 @@ python3 scripts/skill_eval.py run \
 python3 scripts/skill_eval.py assess work/eval/smoke.json \
   --out work/eval/smoke-assessment.json
 python3 scripts/skill_eval.py compare work/eval/smoke.json work/eval/smoke.json \
+  --before-assessment work/eval/smoke-assessment.json \
+  --after-assessment work/eval/smoke-assessment.json \
   --out work/eval/smoke-comparison.md
 ```
 

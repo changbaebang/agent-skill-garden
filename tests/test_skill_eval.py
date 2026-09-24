@@ -67,10 +67,11 @@ class SkillEvaluationTests(unittest.TestCase):
         path.write_text(json.dumps(value), encoding="utf-8")
         return path
 
-    def test_bundled_cases_have_both_splits_and_real_criteria(self):
+    def test_bundled_suite_matches_documented_six_four_split(self):
         suite = EVAL.suite_at(SUITE)
-        self.assertEqual(len(suite["cases"]), 10)
-        self.assertEqual({c["split"] for c in suite["cases"]}, set(EVAL.SPLITS))
+        counts = {split: sum(c["split"] == split for c in suite["cases"])
+                  for split in EVAL.SPLITS}
+        self.assertEqual(counts, {"calibration": 6, "holdout": 4})
 
     def test_run_excludes_oracle_and_records_skill_reference_snapshot(self):
         skill = self.root / "skill"
@@ -108,7 +109,7 @@ class SkillEvaluationTests(unittest.TestCase):
     def test_compatibility_rejects_environment_suite_runner_and_model_drift(self):
         _, before = self.capture()
         _, after = self.capture("after")
-        for field in ("harness_sha256", "suite_sha256", "model", "environment", "runner", "repeat", "kind", "split"):
+        for field in ("harness_sha256", "suite_sha256", "model", "environment", "runner_identity", "repeat", "kind", "split"):
             candidate = dict(after, **{field: "changed"})
             with self.subTest(field=field), self.assertRaisesRegex(ValueError, field):
                 EVAL.compare(before, candidate, EVAL.judgments(before, None),
@@ -187,8 +188,8 @@ class SkillEvaluationTests(unittest.TestCase):
         folder = self.root / "venv"
         venv.EnvBuilder(with_pip=False, symlinks=True).create(folder)
         command = [str(folder / "bin/python"), "-c", "import sys; print(sys.prefix)"]
-        EVAL.runner_identity(command)
-        result = EVAL.execute(command, "", 5)
+        identity = EVAL.runner_identity(command)
+        result = EVAL.execute(identity["command"], "", 5)
         self.assertEqual(result["status"], "ok")
         self.assertEqual(Path(result["answer"].strip()).resolve(), folder.resolve())
 
@@ -236,8 +237,8 @@ class SkillEvaluationTests(unittest.TestCase):
     def test_negative_or_nan_review_time_is_rejected(self):
         _, record = self.capture()
         grades = self.grade(record, ["pass", "pass"])
+        value = EVAL.load(grades)
         for invalid in (-1, float("nan"), True):
-            value = EVAL.load(grades)
             value["assessments"][0]["review_minutes"] = invalid
             grades.write_text(json.dumps(value))
             with self.assertRaises(ValueError):

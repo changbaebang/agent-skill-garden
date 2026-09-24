@@ -214,8 +214,8 @@ change a skill. See [the evaluation guide](docs/skill-evaluation.md) for real-ru
 commands and a no-cost scripted smoke test.
 
 Keep raw answers and assessments in ignored `work/` files. Public cases must be
-authored without private logs; inspect a bounded private sample locally only when
-a specific failure cannot otherwise be explained.
+authored without private logs; inspect a bounded, redacted private sample locally
+only when a specific failure cannot otherwise be explained.
 
 ## Initialize a portable blog workflow
 
