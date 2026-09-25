@@ -23,7 +23,7 @@ SPEC.loader.exec_module(EVAL)
 
 class SkillEvaluationExecutionTests(unittest.TestCase):
     def execute(self, code, timeout=3, prompt=""):
-        return EVAL.execute([sys.executable, "-c", code], prompt, timeout)
+        return EVAL.execute([sys.executable, "-c", code], prompt, timeout, sys.executable)
 
     @unittest.skipUnless(os.name == "posix", "process groups require POSIX")
     def test_large_stdout_does_not_hide_timeout(self):
@@ -74,7 +74,7 @@ class SkillEvaluationExecutionTests(unittest.TestCase):
         self.assertEqual(result["error"], "x" * EVAL.MAX_STDERR)
 
     def test_missing_executable_has_no_truncated_streams(self):
-        result = EVAL.execute(["/nonexistent-eval-runner"], "", 1)
+        result = EVAL.execute(["/nonexistent-eval-runner"], "", 1, sys.executable)
         self.assertEqual(result["status"], "error")
         self.assertIsNone(result["exit_code"])
         self.assertFalse(result["stdout_truncated"])
@@ -259,12 +259,149 @@ class SkillEvaluationExecutionTests(unittest.TestCase):
         self.assertIn("Process-group cleanup failed", result["error"])
 
     def test_double_signal_denial_uses_liveness_eof_without_hanging(self):
-        with patch.object(EVAL.os, "killpg", side_effect=PermissionError("group denied")), \
-                patch.object(EVAL.subprocess.Popen, "kill", side_effect=PermissionError("pid denied")):
-            result = self.execute("print('answer')")
+        real_popen = EVAL.subprocess.Popen
+        processes = []
+
+        def spawn(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            processes.append(process)
+            return process
+
+        try:
+            with patch.object(EVAL.subprocess, "Popen", side_effect=spawn), \
+                    patch.object(EVAL.os, "killpg", side_effect=PermissionError("group denied")), \
+                    patch.object(real_popen, "kill", side_effect=PermissionError("pid denied")):
+                result = self.execute("print('answer')")
+            self.assertEqual(result["status"], "error")
+            self.assertIn("Process-group cleanup failed", result["error"])
+            self.assertNotIn("Supervisor cleanup exceeded", result["error"])
+            self.assertLess(result["elapsed_seconds"], 2)
+            self.assertEqual(len(processes), 1)
+            self.assertIsNotNone(processes[0].returncode, "EOF must actually terminate the supervisor")
+        finally:
+            # A broken liveness implementation must fail without leaving the
+            # very orphan this regression test is intended to detect.
+            for process in processes:
+                if process.poll() is None:
+                    os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=2)
+
+    def test_completion_is_event_driven_without_runner_polling(self):
+        real_popen = EVAL.subprocess.Popen
+
+        def spawn(command, *args, **kwargs):
+            command = command[:]
+            # A runner completion must wake the supervisor directly. Reject
+            # poll() rather than relying on a flaky wall-clock speed threshold.
+            code = command[3]
+            marker = "control = int(sys.argv[1])"
+            self.assertIn(marker, code)
+            command[3] = code.replace(marker,
+                "def forbidden_poll(*args, **kwargs):\n"
+                "    raise RuntimeError('periodic runner polling is forbidden')\n"
+                "subprocess.Popen.poll = forbidden_poll\n" + marker, 1)
+            return real_popen(command, *args, **kwargs)
+
+        with patch.object(EVAL.subprocess, "Popen", side_effect=spawn):
+            result = self.execute("import time; time.sleep(.02); print('answer')")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["exit_code"], 0)
+        self.assertEqual(result["answer"].strip(), "answer")
+
+    def test_supervisor_exceptions_preserve_traceback_before_and_after_stdio_close(self):
+        real_popen = EVAL.subprocess.Popen
+        for phase in ("before", "after"):
+            def spawn(command, *args, **kwargs):
+                command = command[:]
+                lines = command[3].splitlines()
+                marker = "try:" if phase == "before" else "if runner is not None:"
+                index = next(index for index, line in enumerate(lines) if line.strip() == marker)
+                indent = len(lines[index]) - len(lines[index].lstrip())
+                if phase == "before":
+                    index += 1
+                    indent += 4
+                lines.insert(index, " " * indent + "raise RuntimeError('supervisor-diagnostic-marker')")
+                command[3] = "\n".join(lines)
+                return real_popen(command, *args, **kwargs)
+
+            with self.subTest(phase=phase), patch.object(EVAL.subprocess, "Popen", side_effect=spawn):
+                result = self.execute("print('answer')")
+                self.assertEqual(result["status"], "error")
+                self.assertIsNone(result["exit_code"])
+                self.assertIn("Traceback (most recent call last)", result["error"])
+                self.assertIn("RuntimeError: supervisor-diagnostic-marker", result["error"])
+
+    def test_waiter_exception_notifies_supervisor_instead_of_waiting_until_timeout(self):
+        real_popen = EVAL.subprocess.Popen
+
+        def spawn(command, *args, **kwargs):
+            command = command[:]
+            marker = "control = int(sys.argv[1])"
+            self.assertIn(marker, command[3])
+            command[3] = command[3].replace(marker,
+                "def failed_wait(*args, **kwargs):\n"
+                "    raise RuntimeError('waiter-diagnostic-marker')\n"
+                "subprocess.Popen.wait = failed_wait\n" + marker, 1)
+            return real_popen(command, *args, **kwargs)
+
+        with patch.object(EVAL.subprocess, "Popen", side_effect=spawn):
+            result = self.execute("import time; time.sleep(.05); print('answer')")
         self.assertEqual(result["status"], "error")
-        self.assertIn("Process-group cleanup failed", result["error"])
+        self.assertIsNone(result["exit_code"])
+        self.assertIn("Supervisor waiter failure", result["error"])
+        self.assertIn("RuntimeError: waiter-diagnostic-marker", result["error"])
         self.assertLess(result["elapsed_seconds"], 2)
+
+    def test_supervisor_supports_private_descriptors_above_select_fd_setsize(self):
+        script = (
+            "import importlib.util,json,os,resource,sys\n"
+            f"spec=importlib.util.spec_from_file_location('ev',{str(ROOT / 'scripts/skill_eval.py')!r})\n"
+            "ev=importlib.util.module_from_spec(spec);spec.loader.exec_module(ev)\n"
+            "soft,hard=resource.getrlimit(resource.RLIMIT_NOFILE)\n"
+            "if hard!=resource.RLIM_INFINITY and hard<2048:\n"
+            "    print(json.dumps({'unsupported_limit':hard}));sys.exit(0)\n"
+            "resource.setrlimit(resource.RLIMIT_NOFILE,(max(soft,2048),hard))\n"
+            "fds=[]\n"
+            "try:\n"
+            "    fds=[os.open(os.devnull,os.O_RDONLY) for _ in range(1200)]\n"
+            "    result=ev.execute([sys.executable,'-c',\"print('answer')\"],'',2,sys.executable)\n"
+            "    print(json.dumps({'max_fd':max(fds),**result}))\n"
+            "finally:\n"
+            "    for fd in fds:os.close(fd)\n")
+        process = subprocess.run([sys.executable, "-c", script], capture_output=True, timeout=5)
+        self.assertEqual(process.returncode, 0, process.stderr)
+        result = json.loads(process.stdout)
+        if "unsupported_limit" in result:
+            self.skipTest("host hard descriptor limit is below 2048")
+        self.assertGreater(result["max_fd"], 1024)
+        self.assertEqual(result["status"], "ok", result["error"])
+        self.assertEqual(result["exit_code"], 0)
+        self.assertEqual(result["answer"].strip(), "answer")
+
+    def test_cleanup_diagnostics_do_not_add_blank_lines_when_group_signal_succeeded(self):
+        real_popen = EVAL.subprocess.Popen
+        real_wait = real_popen.wait
+        for stderr in ("", "runner-detail"):
+            processes = []
+
+            def spawn(*args, **kwargs):
+                process = real_popen(*args, **kwargs)
+                processes.append(process)
+                return process
+
+            try:
+                with self.subTest(stderr=stderr), \
+                        patch.object(EVAL.subprocess, "Popen", side_effect=spawn), \
+                        patch.object(real_popen, "wait", side_effect=subprocess.TimeoutExpired("test", .5)), \
+                        patch.object(real_popen, "kill", side_effect=PermissionError("pid denied")):
+                    result = self.execute(f"import sys; sys.stderr.write({stderr!r}); print('answer')")
+                self.assertEqual(result["status"], "error")
+                self.assertIn("Supervisor termination failed", result["error"])
+                self.assertFalse(result["error"].startswith("\n"))
+                self.assertNotIn("\n\n", result["error"])
+            finally:
+                for process in processes:
+                    real_wait(process, timeout=2)
 
     def test_cleanup_waits_are_bounded_even_if_signal_and_wait_both_fail(self):
         real_popen = EVAL.subprocess.Popen
@@ -313,7 +450,7 @@ class SkillEvaluationExecutionTests(unittest.TestCase):
                     f"spec=importlib.util.spec_from_file_location('ev',{str(ROOT / 'scripts/skill_eval.py')!r})\n"
                     "ev=importlib.util.module_from_spec(spec);spec.loader.exec_module(ev)\n"
                     f"for fd in {descriptors!r}: os.close(fd)\n"
-                    "result=ev.execute([sys.executable,'-c',\"print('answer')\"],'',2)\n"
+                    "result=ev.execute([sys.executable,'-c',\"print('answer')\"],'',2,sys.executable)\n"
                     f"pathlib.Path({str(output)!r}).write_text(json.dumps(result))\n")
                 process = subprocess.run([sys.executable, "-c", script], capture_output=True, timeout=4)
                 self.assertEqual(process.returncode, 0, process.stderr)
@@ -356,7 +493,7 @@ class SkillEvaluationExecutionTests(unittest.TestCase):
                         f"pathlib.Path({str(ready)!r}).touch()\n"
                         "    return data\n"
                         "ev.os.read=read\n"
-                        f"ev.execute([sys.executable,'-c',{runner!r}],'',10)\n")
+                        f"ev.execute([sys.executable,'-c',{runner!r}],'',10,sys.executable)\n")
                     process = subprocess.Popen([sys.executable, "-c", harness], pass_fds=(proof_write,),
                                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     os.close(proof_write)

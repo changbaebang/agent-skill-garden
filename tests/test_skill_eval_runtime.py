@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import io
 import json
+import shlex
 import sys
 import unittest
 from unittest import mock
@@ -45,6 +46,50 @@ class RuntimeIdentityTests(fixture.SkillEvaluationFixture, unittest.TestCase):
         self.assertEqual(record["supervisor_identity"], EVAL.runner_identity([str(self.supervisor)]))
         self.assertEqual(len(calls), 2)
         self.assertTrue(all(call.args[3] == record["supervisor_identity"]["command"][0] for call in calls))
+
+    def test_execute_uses_supplied_interpreter_instead_of_current_sys_executable(self):
+        marker = self.root / "interpreter-used"
+        self.supervisor.write_text(
+            "#!/bin/sh\n"
+            f"printf used > {shlex.quote(str(marker))}\n"
+            f"exec {shlex.quote(self.python)} \"$@\"\n")
+        identity = EVAL.runner_identity([str(self.supervisor)])
+        with mock.patch.object(EVAL.sys, "executable", "/not-the-recorded-interpreter"):
+            result = EVAL.execute([self.python, "-c", "print('answer')"], "", 3,
+                                  identity["command"][0])
+        self.assertEqual(result["status"], "ok", result["error"])
+        self.assertEqual(result["exit_code"], 0)
+        self.assertEqual(result["answer"].strip(), "answer")
+        self.assertEqual(marker.read_text(), "used")
+
+    def test_both_identities_reject_malformed_shape_after_valid_record_hash(self):
+        original, _ = self.capture_runtime(self.args())
+        malformed = [None, "command", [], {}, {"command": [], "files": {}},
+                     {"command": ["python", None], "files": {}},
+                     {"command": ["python"], "files": []},
+                     {"command": ["python"], "files": {"0": "z" * 64}},
+                     {"command": ["python"], "files": {"0": "a" * 63}},
+                     {"command": ["python"], "files": {"1": "a" * 64}}]
+        for field, message in (("runner_identity", "missing or invalid runner identity"),
+                               ("supervisor_identity", "missing or invalid supervisor interpreter identity")):
+            for value in malformed:
+                with self.subTest(field=field, value=value):
+                    record = {**original, field: value}
+                    record.pop("sha256")
+                    record["sha256"] = EVAL.digest(record)
+                    path = self.root / "malformed-identity.json"
+                    path.write_text(json.dumps(record))
+                    with self.assertRaisesRegex(ValueError, message):
+                        EVAL.read_run(path)
+
+        # Unresolved runner executables can legitimately produce captured errors,
+        # and explicit empty string arguments are valid argv values.
+        record = {**original, "runner_identity": {"command": ["missing-runner", ""], "files": {}}}
+        record.pop("sha256")
+        record["sha256"] = EVAL.digest(record)
+        path = self.root / "unresolved-runner.json"
+        path.write_text(json.dumps(record))
+        self.assertEqual(EVAL.read_run(path)["runner_identity"], record["runner_identity"])
 
     def test_interpreter_content_change_between_runs_blocks_comparison(self):
         before, _ = self.capture_runtime(self.args("before"))

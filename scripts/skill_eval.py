@@ -213,6 +213,19 @@ def runner_stamps(identity: dict, owner: str = "runner") -> dict:
     return stamps
 
 
+def identity_shape(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    command, files = value.get("command"), value.get("files")
+    return (isinstance(command, list) and bool(command) and nonempty(command[0])
+            and all(isinstance(argument, str) for argument in command)
+            and isinstance(files, dict)
+            and set(files) <= {str(index) for index in range(len(command))}
+            and all(isinstance(checksum, str) and len(checksum) == 64
+                    and all(c in "0123456789abcdef" for c in checksum)
+                    for checksum in files.values()))
+
+
 @contextmanager
 def capture_outputs(path: Path, journal_path: Path):
     """Reserve both names, cleaning only our unused output on setup failure."""
@@ -235,7 +248,7 @@ def capture_outputs(path: Path, journal_path: Path):
 
 
 def execute(command: list[str], prompt: str, timeout: float,
-            supervisor_python: str | None = None) -> dict:
+            supervisor_python: str) -> dict:
     import fcntl
 
     def protected_pipe() -> tuple[int, int]:
@@ -259,29 +272,57 @@ def execute(command: list[str], prompt: str, timeout: float,
     # A live supervisor reserves the process group after the runner exits. Its
     # private pipe carries the runner's status; descendants never inherit it.
     supervisor = """
-import json, os, select, signal, subprocess, sys
+import json, os, selectors, signal, subprocess, sys, threading, traceback
 control = int(sys.argv[1])
 alive = int(sys.argv[2])
 try:
-    if select.select([alive], [], [], 0)[0] and not os.read(alive, 1):
-        raise SystemExit
-    runner = None
-    try:
-        runner = subprocess.Popen(sys.argv[3:], close_fds=True)
-    except OSError as error:
-        outcome = {"exit_code": None, "error": str(error)}
-    for fd in (0, 1, 2):
-        os.close(fd)
-    if runner is not None:
-        while runner.poll() is None:
-            if select.select([alive], [], [], .05)[0] and not os.read(alive, 1):
-                raise SystemExit
-        outcome = {"exit_code": runner.returncode, "error": ""}
+    with selectors.DefaultSelector() as events:
+        events.register(alive, selectors.EVENT_READ, "parent")
+        if events.select(0) and not os.read(alive, 1):
+            raise SystemExit
+        runner = None
+        try:
+            runner = subprocess.Popen(sys.argv[3:], close_fds=True)
+        except OSError as error:
+            outcome = {"exit_code": None, "error": str(error)}
+        for fd in (0, 1, 2):
+            os.close(fd)
+        if runner is not None:
+            completed, notify = os.pipe()
+            outcomes = []
+            def wait_for_runner():
+                try:
+                    outcomes.append({"exit_code": runner.wait(), "error": ""})
+                except BaseException:
+                    outcomes.append({"exit_code": None, "error": "Supervisor waiter failure:\\n" + traceback.format_exc()})
+                finally:
+                    os.close(notify)
+            events.register(completed, selectors.EVENT_READ, "runner")
+            threading.Thread(target=wait_for_runner, daemon=True).start()
+            while not outcomes:
+                for key, _ in events.select():
+                    if key.data == "parent" and not os.read(alive, 1):
+                        raise SystemExit
+            outcome = outcomes[0]
+            events.unregister(completed)
+            os.close(completed)
     message = (json.dumps(outcome) + "\\n").encode()
     while message:
         message = message[os.write(control, message):]
     os.close(control)
     while os.read(alive, 1):
+        pass
+except SystemExit:
+    pass
+except BaseException:
+    # stdout/stderr may already be closed. Keep the diagnosis in the private
+    # status channel before group cleanup prevents Python printing a traceback.
+    outcome = {"exit_code": None, "error": "Supervisor failure:\\n" + traceback.format_exc()}
+    try:
+        message = (json.dumps(outcome) + "\\n").encode()
+        while message:
+            message = message[os.write(control, message):]
+    except OSError:
         pass
 finally:
     # The harness alone owns the write end. EOF also catches SIGKILL/SIGTERM
@@ -303,7 +344,7 @@ finally:
         control = os.fdopen(read_fd, "rb", buffering=0)
         try:
             process = subprocess.Popen(
-                [supervisor_python or sys.executable, "-I", "-c", supervisor,
+                [supervisor_python, "-I", "-c", supervisor,
                  str(write_fd), str(alive_read), *command],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 pass_fds=(write_fd, alive_read), cwd=cwd, start_new_session=True)
@@ -390,11 +431,11 @@ finally:
                     try:
                         process.kill()
                     except OSError as error:
-                        cleanup_error += f"\nSupervisor termination failed: {error}"
+                        cleanup_error += ("\n" if cleanup_error else "") + f"Supervisor termination failed: {error}"
                     try:
                         process.wait(timeout=max(0, cleanup_deadline - time.monotonic()))
                     except subprocess.TimeoutExpired:
-                        cleanup_error += "\nSupervisor cleanup exceeded 1.0s; it may still be running."
+                        cleanup_error += ("\n" if cleanup_error else "") + "Supervisor cleanup exceeded 1.0s; it may still be running."
                 for stream in (process.stdin, process.stdout, process.stderr, control):
                     stream.close()
         answer = captured["stdout"].decode("utf-8", errors="replace")
@@ -548,13 +589,10 @@ def read_run(path: Path) -> dict:
             "invalid repetition count")
     require(record.get("selected_suite_sha256") == selected_suite_hash(record["suite"], record["split"]),
             "selected suite hash mismatch")
+    require(identity_shape(record.get("runner_identity")), "missing or invalid runner identity")
     supervisor = record.get("supervisor_identity")
-    require(isinstance(supervisor, dict)
-            and isinstance(supervisor.get("command"), list) and len(supervisor["command"]) == 1
-            and nonempty(supervisor["command"][0])
-            and isinstance(supervisor.get("files"), dict) and set(supervisor["files"]) == {"0"}
-            and isinstance(supervisor["files"]["0"], str) and len(supervisor["files"]["0"]) == 64
-            and all(c in "0123456789abcdef" for c in supervisor["files"]["0"]),
+    require(identity_shape(supervisor) and len(supervisor["command"]) == 1
+            and set(supervisor["files"]) == {"0"},
             "missing or invalid supervisor interpreter identity")
     cases = {c["id"]: c for c in selected_cases(record["suite"], record["split"])}
     prompt_hashes = {key: hashlib.sha256(prompt_for(case, record["skill"]).encode()).hexdigest()

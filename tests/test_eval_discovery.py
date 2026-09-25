@@ -54,6 +54,28 @@ class BehavioralSuiteDiscoveryTests(unittest.TestCase):
         self.assertIn("evals/legacy-suite.json", result.stderr)
         self.assertIn("evals/suites/", result.stderr)
         self.assertIn("evals/<kind>/", result.stderr)
+        self.assertIn("Registered top-level routing files: routing.json", result.stderr)
+        self.assertIn("routing-format definitions only", result.stderr)
+        self.assertNotIn("must be registered", result.stderr)
+
+    def test_routing_load_failures_use_error_diagnostics_without_tracebacks(self):
+        route = self.root / "evals/routing.json"
+        for name, content in (("missing", None), ("invalid-json", b"{"),
+                              ("invalid-utf8", b"\xff")):
+            with self.subTest(name=name):
+                if content is not None:
+                    route.write_bytes(content)
+                result = subprocess.run(
+                    [sys.executable, "-c",
+                     "import sys; from pathlib import Path; "
+                     "from scripts.validate_evals import validate_routes; "
+                     "raise SystemExit(validate_routes(Path(sys.argv[1])))", str(self.root)],
+                    cwd=ROOT, text=True, capture_output=True, check=False,
+                )
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("ERROR: evals/routing.json: cannot load routing definition:", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertNotIn("Validated", result.stdout)
 
     def test_routing_owner_registration_is_shared_and_validates_each_file(self):
         (self.suites / "good.json").write_text(json.dumps(self.value), encoding="utf-8")

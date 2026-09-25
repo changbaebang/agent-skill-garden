@@ -22,8 +22,9 @@ def validate_suites(root: Path) -> int:
             print(
                 f"ERROR: unexpected top-level evaluation file: evals/{path.name}. "
                 "Move behavioral suites to evals/suites/; put other definition formats "
-                "in a named evals/<kind>/ directory. Top-level routing definitions "
-                "must be registered with validate_evals.py.",
+                "in a named evals/<kind>/ directory. Registered top-level routing files: "
+                f"{', '.join(validate_evals.ROUTING_FILES) or '(none)'} "
+                "(routing-format definitions only).",
                 file=sys.stderr,
             )
         return 1

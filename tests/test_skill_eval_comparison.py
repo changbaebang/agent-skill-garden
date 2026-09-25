@@ -141,7 +141,7 @@ class SkillEvaluationComparisonTests(fixture.SkillEvaluationFixture, unittest.Te
         self.assertIn("| fail | pass | improved |", report)
         self.assertIn("| pass | fail | regressed |", report)
 
-    def test_case_definition_order_does_not_change_v2_execution_or_comparison(self):
+    def test_case_definition_order_does_not_change_execution_or_comparison(self):
         _, before = self.capture()
         suite = EVAL.load(self.suite)
         suite["cases"].reverse()

@@ -18,7 +18,11 @@ def validate_routes(root: Path) -> int:
     seen: set[str] = set()
     total = 0
     for filename in ROUTING_FILES:
-        cases = json.loads((root / "evals" / filename).read_text(encoding="utf-8"))
+        try:
+            cases = json.loads((root / "evals" / filename).read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            errors.append(f"evals/{filename}: cannot load routing definition: {error}")
+            continue
         if not isinstance(cases, list) or not cases:
             errors.append(f"evals/{filename} must contain a non-empty array")
             cases = []

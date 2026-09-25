@@ -197,14 +197,14 @@ class SkillEvaluationTests(SkillEvaluationFixture, unittest.TestCase):
         venv.EnvBuilder(with_pip=False, symlinks=True).create(folder)
         command = [str(folder / "bin/python"), "-c", "import sys; print(sys.prefix)"]
         identity = EVAL.runner_identity(command)
-        result = EVAL.execute(identity["command"], "", 5)
+        result = EVAL.execute(identity["command"], "", 5, sys.executable)
         self.assertEqual(result["status"], "ok")
         self.assertEqual(Path(result["answer"].strip()).resolve(), folder.resolve())
 
     def test_missing_executable_timeout_and_empty_output_are_not_success(self):
-        self.assertEqual(EVAL.execute(["/nonexistent-eval-runner"], "prompt", 1)["status"], "error")
-        self.assertEqual(EVAL.execute([sys.executable, "-c", "pass"], "prompt", 1)["status"], "error")
-        result = EVAL.execute([sys.executable, "-c", "import time; time.sleep(10)"], "prompt", 0.03)
+        self.assertEqual(EVAL.execute(["/nonexistent-eval-runner"], "prompt", 1, sys.executable)["status"], "error")
+        self.assertEqual(EVAL.execute([sys.executable, "-c", "pass"], "prompt", 1, sys.executable)["status"], "error")
+        result = EVAL.execute([sys.executable, "-c", "import time; time.sleep(10)"], "prompt", 0.03, sys.executable)
         self.assertEqual(result["status"], "timeout")
 
     @unittest.skipUnless(os.name == "posix", "process groups require POSIX")
@@ -212,14 +212,14 @@ class SkillEvaluationTests(SkillEvaluationFixture, unittest.TestCase):
         marker = self.root / "late-write"
         child = "import time,pathlib; time.sleep(.3); pathlib.Path(" + repr(str(marker)) + ").touch()"
         parent = "import subprocess,sys,time; subprocess.Popen([sys.executable,'-c'," + repr(child) + "]); time.sleep(10)"
-        result = EVAL.execute([sys.executable, "-c", parent], "prompt", 0.08)
+        result = EVAL.execute([sys.executable, "-c", parent], "prompt", 0.08, sys.executable)
         self.assertEqual(result["status"], "timeout")
         import time
         time.sleep(0.35)
         self.assertFalse(marker.exists())
 
     def test_excessive_output_cannot_be_scored_as_a_complete_answer(self):
-        result = EVAL.execute([sys.executable, "-c", "print('x' * 1000001)"], "", 2)
+        result = EVAL.execute([sys.executable, "-c", "print('x' * 1000001)"], "", 2, sys.executable)
         self.assertEqual(result["status"], "output_limit")
 
     def test_symlinked_skill_content_is_rejected(self):
