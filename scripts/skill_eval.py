@@ -25,7 +25,7 @@ from pathlib import Path
 
 
 SUITE_VERSION = 1
-RUN_VERSION = 2
+RUN_VERSION = 3
 ASSESSMENT_VERSION = 1
 SPLITS = ("calibration", "holdout")
 VERDICTS = ("pass", "fail", "unjudged")
@@ -92,17 +92,6 @@ def selected_cases(suite: dict, split: str) -> list[dict]:
 def selected_suite_hash(suite: dict, split: str) -> str:
     return digest({"version": suite["version"], "id": suite["id"],
                    "cases": selected_cases(suite, split)})
-
-
-def comparison_suite_hash(record: dict) -> str:
-    if record["version"] == 1:
-        # Legacy runners executed the source order. Derive a missing fingerprint
-        # without modifying the original record or the hash binding assessments.
-        suite = record["suite"]
-        cases = [case for case in suite["cases"]
-                 if record["split"] == "all" or case["split"] == record["split"]]
-        return digest({"version": suite["version"], "id": suite["id"], "cases": cases})
-    return record["selected_suite_sha256"]
 
 
 def validate_suite(suite: dict) -> None:
@@ -210,14 +199,14 @@ def runner_identity(command: list[str]) -> dict:
     return {"command": normalized, "files": files}
 
 
-def runner_stamps(identity: dict) -> dict:
+def runner_stamps(identity: dict, owner: str = "runner") -> dict:
     """Cheap drift signals between calls; full content hashes still bookend a run."""
     stamps = {}
     for index in identity["files"]:
         try:
             stat = Path(identity["command"][int(index)]).stat()
         except OSError as error:
-            raise ValueError("runner files changed or became unavailable; "
+            raise ValueError(f"{owner} files changed or became unavailable; "
                              "completed attempts remain in the run journal") from error
         stamps[index] = (stat.st_dev, stat.st_ino, stat.st_size,
                          stat.st_mtime_ns, stat.st_ctime_ns, stat.st_mode)
@@ -245,7 +234,23 @@ def capture_outputs(path: Path, journal_path: Path):
             yield output, journal
 
 
-def execute(command: list[str], prompt: str, timeout: float) -> dict:
+def execute(command: list[str], prompt: str, timeout: float,
+            supervisor_python: str | None = None) -> dict:
+    import fcntl
+
+    def protected_pipe() -> tuple[int, int]:
+        descriptors = list(os.pipe())
+        try:
+            for index, descriptor in enumerate(descriptors):
+                if descriptor < 3:
+                    descriptors[index] = fcntl.fcntl(descriptor, fcntl.F_DUPFD_CLOEXEC, 3)
+                    os.close(descriptor)
+        except BaseException:
+            for descriptor in descriptors:
+                os.close(descriptor)
+            raise
+        return tuple(descriptors)
+
     started = time.monotonic()
     deadline = started + timeout
     pending = memoryview(prompt.encode())
@@ -254,39 +259,67 @@ def execute(command: list[str], prompt: str, timeout: float) -> dict:
     # A live supervisor reserves the process group after the runner exits. Its
     # private pipe carries the runner's status; descendants never inherit it.
     supervisor = """
-import json, os, signal, subprocess, sys
+import json, os, select, signal, subprocess, sys
 control = int(sys.argv[1])
-runner = None
+alive = int(sys.argv[2])
 try:
-    runner = subprocess.Popen(sys.argv[2:], close_fds=True)
-except OSError as error:
-    outcome = {"exit_code": None, "error": str(error)}
-for fd in (0, 1, 2):
-    os.close(fd)
-if runner is not None:
-    outcome = {"exit_code": runner.wait(), "error": ""}
-message = (json.dumps(outcome) + "\\n").encode()
-while message:
-    message = message[os.write(control, message):]
-os.close(control)
-while True:
-    signal.pause()
+    if select.select([alive], [], [], 0)[0] and not os.read(alive, 1):
+        raise SystemExit
+    runner = None
+    try:
+        runner = subprocess.Popen(sys.argv[3:], close_fds=True)
+    except OSError as error:
+        outcome = {"exit_code": None, "error": str(error)}
+    for fd in (0, 1, 2):
+        os.close(fd)
+    if runner is not None:
+        while runner.poll() is None:
+            if select.select([alive], [], [], .05)[0] and not os.read(alive, 1):
+                raise SystemExit
+        outcome = {"exit_code": runner.returncode, "error": ""}
+    message = (json.dumps(outcome) + "\\n").encode()
+    while message:
+        message = message[os.write(control, message):]
+    os.close(control)
+    while os.read(alive, 1):
+        pass
+finally:
+    # The harness alone owns the write end. EOF also catches SIGKILL/SIGTERM
+    # without depending on its finally block, both during and after the runner.
+    try:
+        os.killpg(os.getpgrp(), signal.SIGKILL)
+    except OSError:
+        pass
+    os._exit(1)
 """
     with tempfile.TemporaryDirectory(prefix="garden-eval-") as cwd:
-        read_fd, write_fd = os.pipe()
+        read_fd, write_fd = protected_pipe()
+        try:
+            alive_read, alive_write = protected_pipe()
+        except BaseException:
+            os.close(read_fd)
+            os.close(write_fd)
+            raise
         control = os.fdopen(read_fd, "rb", buffering=0)
         try:
             process = subprocess.Popen(
-                [sys.executable, "-I", "-c", supervisor, str(write_fd), *command],
+                [supervisor_python or sys.executable, "-I", "-c", supervisor,
+                 str(write_fd), str(alive_read), *command],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                pass_fds=(write_fd,), cwd=cwd, start_new_session=True)
+                pass_fds=(write_fd, alive_read), cwd=cwd, start_new_session=True)
         except OSError as error:
             control.close()
+            os.close(alive_write)
             return {"status": "error", "elapsed_seconds": time.monotonic() - started,
                     "answer": "", "error": str(error), "exit_code": None,
                     "stdout_truncated": False, "stderr_truncated": False}
+        except BaseException:
+            control.close()
+            os.close(alive_write)
+            raise
         finally:
             os.close(write_fd)
+            os.close(alive_read)
         status = "ok"
         captured = {"stdout": bytearray(), "stderr": bytearray(), "control": bytearray()}
         sizes = {"stdout": 0, "stderr": 0, "control": 0}
@@ -340,16 +373,28 @@ while True:
             # The live leader reserves the PGID on every path. No poll()/wait()
             # is allowed before this signal, including after successful output.
             try:
-                if process.returncode is None:
-                    os.killpg(process.pid, signal.SIGKILL)
+                os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
             except OSError as error:
                 cleanup_error = f"Process-group cleanup failed: {error}"
-                # Reap our own supervisor even if group signaling was denied.
-                process.kill()
             finally:
-                process.wait()
+                # Let the supervisor clean its own group if our signal was
+                # denied. Neither signal denial nor an unresponsive process
+                # may turn a bounded evaluation into an unbounded wait.
+                os.close(alive_write)
+                cleanup_deadline = time.monotonic() + 1.0
+                try:
+                    process.wait(timeout=.5)
+                except subprocess.TimeoutExpired:
+                    try:
+                        process.kill()
+                    except OSError as error:
+                        cleanup_error += f"\nSupervisor termination failed: {error}"
+                    try:
+                        process.wait(timeout=max(0, cleanup_deadline - time.monotonic()))
+                    except subprocess.TimeoutExpired:
+                        cleanup_error += "\nSupervisor cleanup exceeded 1.0s; it may still be running."
                 for stream in (process.stdin, process.stdout, process.stderr, control):
                     stream.close()
         answer = captured["stdout"].decode("utf-8", errors="replace")
@@ -369,7 +414,7 @@ while True:
         except (ValueError, KeyError, UnicodeError):
             if status == "ok":
                 status = "error"
-                errors += ("\n" if errors else "") + "Supervisor exited without a valid runner status."
+            errors += ("\n" if errors else "") + "No valid runner exit status was received from the supervisor."
         if cleanup_error:
             if status == "ok":
                 status = "error"
@@ -393,6 +438,9 @@ def run(args: argparse.Namespace) -> None:
     identity = runner_identity(command)
     command = identity["command"]
     stamps = runner_stamps(identity)
+    supervisor = runner_identity([sys.executable])
+    require("0" in supervisor["files"], "cannot identify supervisor interpreter")
+    supervisor_stamps = runner_stamps(supervisor, "supervisor interpreter")
     require(not args.out.exists(), "output already exists; choose a new path")
     require(args.repeat > 0 and args.repeat <= 20, "repeat must be 1..20")
     require(number(args.timeout) and args.timeout > 0, "timeout must be positive")
@@ -410,7 +458,7 @@ def run(args: argparse.Namespace) -> None:
         "selected_suite_sha256": selected_suite_hash(suite, args.split),
         "skill_sha256": digest(skill), "model": args.model,
         "environment": args.environment,
-        "runner_identity": identity, "repeat": args.repeat,
+        "runner_identity": identity, "supervisor_identity": supervisor, "repeat": args.repeat,
         "split": args.split, "timeout_seconds": args.timeout,
     }
     digest(metadata)
@@ -432,9 +480,11 @@ def run(args: argparse.Namespace) -> None:
                 for case, prompt, source_hash in prompts:
                     require(stamps == runner_stamps(identity),
                             "runner files changed during execution; completed attempts remain in the run journal")
+                    require(supervisor_stamps == runner_stamps(supervisor, "supervisor interpreter"),
+                            "supervisor interpreter changed during execution; completed attempts remain in the run journal")
                     event("attempt_started", case_id=case["id"], trial=trial)
                     print(f"Running {case['id']} trial {trial}", file=sys.stderr)
-                    result = execute(command, prompt, args.timeout)
+                    result = execute(command, prompt, args.timeout, supervisor["command"][0])
                     row = {"case_id": case["id"], "trial": trial,
                            "input_sha256": source_hash,
                            "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(), **result}
@@ -447,6 +497,13 @@ def run(args: argparse.Namespace) -> None:
                                  "completed attempts remain in the run journal") from error
             require(identity == final_identity,
                     "runner files changed during execution; completed attempts remain in the run journal")
+            try:
+                final_supervisor = runner_identity(supervisor["command"])
+            except (OSError, ValueError) as error:
+                raise ValueError("supervisor interpreter changed or became unavailable; "
+                                 "completed attempts remain in the run journal") from error
+            require(supervisor == final_supervisor,
+                    "supervisor interpreter changed during execution; completed attempts remain in the run journal")
             record = {**metadata, "state": "complete", "results": rows}
             record["sha256"] = digest(record)
             json.dump(record, output, ensure_ascii=False, indent=2, allow_nan=False)
@@ -480,8 +537,8 @@ def read_run(path: Path) -> dict:
     signature = record.pop("sha256", None)
     require(signature == digest(record), "run changed after capture or is missing its hash")
     record["sha256"] = signature
-    require(type(record.get("version")) is int and record["version"] in (1, RUN_VERSION),
-            f"unsupported run version {record.get('version')!r}; supported run versions: 1, {RUN_VERSION}")
+    require(type(record.get("version")) is int and record["version"] == RUN_VERSION,
+            f"unsupported run version {record.get('version')!r}; capture with current run format {RUN_VERSION}")
     require(record.get("kind") in ("runner", "synthetic"), "invalid run kind")
     validate_suite(record["suite"])
     require(record.get("suite_sha256") == digest(record["suite"]), "suite hash mismatch")
@@ -489,15 +546,16 @@ def read_run(path: Path) -> dict:
     require(record.get("split") in (*SPLITS, "all"), "invalid run split")
     require(type(record.get("repeat")) is int and 1 <= record["repeat"] <= 20,
             "invalid repetition count")
-    if record["version"] == 1:
-        if "selected_suite_sha256" in record:
-            require(record["selected_suite_sha256"] == comparison_suite_hash(record),
-                    "selected suite hash mismatch")
-        print("Reading legacy run version 1; preserving captured evidence and hashes. "
-              "Cross-harness comparisons remain disabled.", file=sys.stderr)
-    else:
-        require(record.get("selected_suite_sha256") == selected_suite_hash(record["suite"], record["split"]),
-                "selected suite hash mismatch")
+    require(record.get("selected_suite_sha256") == selected_suite_hash(record["suite"], record["split"]),
+            "selected suite hash mismatch")
+    supervisor = record.get("supervisor_identity")
+    require(isinstance(supervisor, dict)
+            and isinstance(supervisor.get("command"), list) and len(supervisor["command"]) == 1
+            and nonempty(supervisor["command"][0])
+            and isinstance(supervisor.get("files"), dict) and set(supervisor["files"]) == {"0"}
+            and isinstance(supervisor["files"]["0"], str) and len(supervisor["files"]["0"]) == 64
+            and all(c in "0123456789abcdef" for c in supervisor["files"]["0"]),
+            "missing or invalid supervisor interpreter identity")
     cases = {c["id"]: c for c in selected_cases(record["suite"], record["split"])}
     prompt_hashes = {key: hashlib.sha256(prompt_for(case, record["skill"]).encode()).hexdigest()
                      for key, case in cases.items()}
@@ -588,30 +646,34 @@ def md_text(value: object) -> str:
     return "".join(pieces)
 
 
-def compare(before: dict, after: dict, left: dict, right: dict) -> tuple[str, bool]:
+def compare(before: dict, after: dict, left: dict, right: dict, *,
+            variability: bool = False) -> tuple[str, bool]:
     require(before.get("state") == after.get("state") == "complete",
             "only complete runs can be assessed or compared")
     require(before["sha256"] != after["sha256"], "incomparable runs: same captured run")
     same_skill = digest(before["skill"]["files"]) == digest(after["skill"]["files"])
-    for field in ("version", "harness_sha256", "model", "environment", "runner_identity", "repeat", "split",
-                  "timeout_seconds", "kind"):
+    for field in ("version", "harness_sha256", "selected_suite_sha256", "model", "environment",
+                  "runner_identity", "supervisor_identity", "repeat", "split", "timeout_seconds", "kind"):
         require(before[field] == after[field], f"incomparable runs: {field} differs")
-    require(comparison_suite_hash(before) == comparison_suite_hash(after),
-            "incomparable runs: selected_suite_sha256 differs")
+    if variability:
+        require(same_skill, "--variability requires identical skill content in separate captures")
+    else:
+        require(not same_skill, "incomparable runs: identical skill content; "
+                "use --variability to explicitly compare independent captures of the same skill")
     cases = {c["id"]: c for c in before["suite"]["cases"]}
     later = {(r["case_id"], r["trial"]): r for r in after["results"]}
-    positive, negative = ("fail_to_pass", "pass_to_fail") if same_skill else ("improved", "regressed")
+    positive, negative = ("fail_to_pass", "pass_to_fail") if variability else ("improved", "regressed")
     summary = {split: dict.fromkeys((positive, negative, "unchanged_pass", "unchanged_fail", "inconclusive"), 0)
                for split in SPLITS}
     lines = ["# Skill evaluation comparison", ""]
-    if same_skill:
+    if variability:
         lines += ["**SAME-SKILL VARIABILITY: separate captures with identical skill content.**",
                   "Transitions describe observed run and judgment variability, not skill improvement. "
                   "They do not distinguish model variation from reviewer disagreement.", ""]
     if before["kind"] == "synthetic":
         lines += ["**SYNTHETIC: scripted plumbing demonstration, not model-quality evidence.**", ""]
     lines += [f"Before: {md_text(before['label'])}; after: {md_text(after['label'])}.",
-              f"Selected cases: `{comparison_suite_hash(before)}`.",
+              f"Selected cases: `{before['selected_suite_sha256']}`.",
               f"Full suite snapshots: `{before['suite_sha256']}` → `{after['suite_sha256']}`.",
               f"Before run: `{before['sha256']}`; after run: `{after['sha256']}`.",
               f"Skill snapshots: `{before['skill_sha256']}` → `{after['skill_sha256']}`.",
@@ -672,7 +734,7 @@ def compare(before: dict, after: dict, left: dict, right: dict) -> tuple[str, bo
             lines.append(f"- {md_text(case_id)} / {md_text(check['id'])}: {md_text(check['criterion'])}")
     lines += ["", "## Interpretation", "",
               ("Use these separate captures to inspect baseline variability before attributing differences to a skill change. "
-               if same_skill else "Review regressions and missing evidence before adopting a skill change. ") +
+               if variability else "Review regressions and missing evidence before adopting a skill change. ") +
               "Use calibration cases for edits and untouched cases for final checks. "
               "The bundled holdout is public, so it is not a secret or leakage-proof benchmark. "
               "Repeat runs to inspect variability; these counts are not significance tests. "
@@ -708,6 +770,8 @@ def main(argv: list[str] | None = None) -> int:
     comparison.add_argument("--before-assessment", type=Path)
     comparison.add_argument("--after-assessment", type=Path)
     comparison.add_argument("--out", type=Path, required=True)
+    comparison.add_argument("--variability", action="store_true",
+                            help="explicitly compare separate captures with identical skill content")
     comparison.add_argument("--fail-on-regression", action="store_true")
     args = parser.parse_args(argv)
     try:
@@ -722,7 +786,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             before, after = read_run(args.before), read_run(args.after)
             report, regressed = compare(before, after, judgments(before, args.before_assessment),
-                                        judgments(after, args.after_assessment))
+                                        judgments(after, args.after_assessment), variability=args.variability)
             args.out.parent.mkdir(parents=True, exist_ok=True)
             with args.out.open("x", encoding="utf-8") as handle:
                 handle.write(report)

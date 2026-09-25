@@ -55,6 +55,38 @@ class BehavioralSuiteDiscoveryTests(unittest.TestCase):
         self.assertIn("evals/suites/", result.stderr)
         self.assertIn("evals/<kind>/", result.stderr)
 
+    def test_routing_owner_registration_is_shared_and_validates_each_file(self):
+        (self.suites / "good.json").write_text(json.dumps(self.value), encoding="utf-8")
+        skill = self.root / "core/skills/example"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("Example skill", encoding="utf-8")
+        for index, filename in enumerate(("routes-a.json", "routes-b.json")):
+            (self.root / "evals" / filename).write_text(json.dumps([{
+                "id": f"route-{index}", "prompt": "Review this change.",
+                "expected_skill": "example", "forbidden_actions": ["publish"],
+            }]), encoding="utf-8")
+
+        def validate_registered():
+            return subprocess.run(
+                [sys.executable, "-c",
+                 "import sys; from pathlib import Path; "
+                 "from scripts import validate_evals, validate_skill_evals; "
+                 "validate_evals.ROUTING_FILES = ('routes-a.json', 'routes-b.json'); "
+                 "root = Path(sys.argv[1]); "
+                 "raise SystemExit(validate_evals.validate_routes(root) or "
+                 "validate_skill_evals.validate_suites(root))", str(self.root)],
+                cwd=ROOT, text=True, capture_output=True, check=False,
+            )
+
+        registered = validate_registered()
+        self.assertEqual(registered.returncode, 0, registered.stderr)
+        self.assertIn("Validated 2 synthetic routing case definitions", registered.stdout)
+        self.assertIn("behavioral cases", registered.stdout)
+        (self.root / "evals/routes-b.json").write_text("{}", encoding="utf-8")
+        malformed = validate_registered()
+        self.assertNotEqual(malformed.returncode, 0)
+        self.assertIn("evals/routes-b.json must contain a non-empty array", malformed.stderr)
+
     def test_malformed_definition_in_suite_directory_is_not_skipped(self):
         (self.suites / "good.json").write_text(json.dumps(self.value), encoding="utf-8")
         nested = self.suites / "nested"

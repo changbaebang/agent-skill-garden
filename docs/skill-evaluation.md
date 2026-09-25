@@ -15,9 +15,11 @@ small authored fixtures, not a validated benchmark. Inputs provide source code
 and external contracts; expected verdicts belong only in the human criteria.
 Repository validation discovers all JSON definitions under `evals/suites/`,
 including nested directories, and rejects malformed suites. At the top level of
-`evals/`, only `routing.json` is allowed; a misplaced JSON file fails with migration
-guidance. Put other definition formats in named directories such as
-`evals/schemas/`, with their own validators. Keep captured runs and assessments in
+`evals/`, routing definitions registered in `validate_evals.py` are allowed
+(currently `routing.json`); the routing validator checks every registered file.
+Other misplaced JSON files fail with migration guidance. Put other definition
+formats in named directories such as `evals/schemas/`, with their own validators.
+Keep captured runs and assessments in
 ignored `work/`, rather than among public definitions.
 
 ## 1. Run one condition
@@ -93,15 +95,19 @@ automatically loaded. Keep the first experiment within the self-contained
 
 The result file captures the suite and skill snapshots, their hashes, the harness
 source hash, model and environment declarations, the runner command and hashes
-of its executable and explicit file arguments under `runner_identity`, every
-attempt's answer, status, elapsed time and the bounded tail of stderr. Truncation
-is recorded so a clipped answer or log is not mistaken for complete evidence.
-The executable and explicit file arguments are hashed once before and once after
-the experiment. Before each attempt their device, inode, size, modification time,
+of its executable and explicit file arguments under `runner_identity`, and the
+Python interpreter used to launch the supervisor under `supervisor_identity`.
+It also records every attempt's answer, status, elapsed time and the bounded tail
+of stderr. Truncation is recorded so a clipped answer or log is not mistaken for
+complete evidence.
+The runner's executable and explicit file arguments, and the supervisor's Python
+interpreter, are hashed once before and once after the experiment. Before each
+attempt their device, inode, size, modification time,
 change time and mode are checked for drift. This avoids rehashing large binaries
 for every attempt while stopping ordinary mid-run changes. Hashing detects
 accidental edits, not malicious tampering or undisclosed model changes.
-Dependencies imported by an adapter are not hashed; pin them and include
+Imported dependencies and the rest of the operating system are not hashed; pin
+the dependencies you control and include
 their versions in the environment declaration. Keep credentials in the host's
 credential store or environment, never in command arguments.
 
@@ -115,15 +121,27 @@ or its deadline. Input delivery and both output streams are serviced concurrentl
 so a runner that delays reading stdin cannot block output capture or the timeout.
 The same deadline covers output pipes inherited by child processes. A supervisor
 stays alive in the attempt's process group and reports the actual runner's exit
-status over a dedicated pipe. On success, error, timeout or interruption, the
-harness kills that group before reaping the supervisor. Descendants that merely
-close their standard streams therefore still receive cleanup. The recorded
+status over a dedicated pipe. A separate liveness pipe has its only write end in
+the harness. The supervisor watches it during and after runner execution; if the
+harness dies, including from SIGTERM or SIGKILL, EOF causes the supervisor to
+signal its own process group for cleanup. On success, error, timeout or
+interruption, the harness signals that group before reaping the supervisor and
+closes the liveness pipe even if signaling fails. Descendants that merely close
+their standard streams therefore remain in the cleanup group. Cleanup waits and
+retries have a total one-second budget; expiry records that processes may still
+be running instead of waiting indefinitely.
+
+The recorded
 `exit_code` belongs to the runner; it is `null` if its status was not observed
 before termination, rather than the supervisor's kill status. A runner status
 already observed is retained even if inherited output pipes later time out.
-Unexpected supervisor exit or cleanup failure is an error. Processes that escape
-the group with `setsid`/`setpgid` or change privileges remain outside this cleanup
-boundary; use runner-level isolation when you need a security sandbox.
+Missing or invalid runner status from the supervisor and cleanup failures always
+add diagnostics to `error`.
+They change an otherwise successful attempt to `error`, while an existing timeout
+keeps its `timeout` status and carries the additional diagnostics. Processes that
+escape the group with `setsid`/`setpgid`, change privileges, or remain in an
+uninterruptible kernel state are outside the guaranteed cleanup boundary; use
+runner-level isolation when you need a security sandbox.
 
 The suite, snapshots and hashes are checked before any runner is invoked. The
 requested output and a companion `<output>.journal.jsonl` are reserved without
@@ -158,14 +176,12 @@ its omission. Leave disputed or unchecked judgments as `unjudged`. Optional
 The same process applies to baseline and candidate runs. Do not edit the run file
 or the assessment's criteria. An assessment is bound to the exact run hash.
 
-Suite, run and assessment formats have separate versions: currently 1, 2 and 1.
-Earlier version-1 captures remain readable and assessable with a legacy-format
-notice when their recorded fields validate. If the selected-suite fingerprint
-is absent, it is derived from the embedded suite in memory. The original run
-file, fields and hash are preserved. Two version-1 captures can still be compared
-when their harness and other conditions match; mixing run versions or harness
-revisions is rejected. Create fresh matched captures for a new experiment rather
-than relabeling old evidence as a new format.
+Suite, run and assessment formats have separate versions: currently 1, 3 and 1.
+Only the current run format is accepted. Earlier development captures using run
+versions 1 or 2 fail with an unsupported-version error; they are not rewritten or
+automatically migrated. Preserve those files as historical evidence and create
+fresh matched captures for current assessment and comparison. Do not change a
+record's version number to make an old format pass validation.
 
 The rubric separately asks whether known defects were detected, resolved issues
 were repeated, a pre-existing issue was misclassified, or a claim exceeded the
@@ -186,23 +202,27 @@ python3 scripts/skill_eval.py compare \
 
 Also compare the baseline against the current skill to check that added guidance
 has value at all. Comparisons require matching harness, model, environment, runner
-identity, run format, split, repetition count, timeout and synthetic/runner kind. Suite
+and supervisor identities, run format, split, repetition count, timeout and
+synthetic/runner kind. Suite
 compatibility covers the selected cases and their criteria. The full suite is
 retained and hashed for audit, but adding untouched holdout cases does not
 invalidate earlier calibration comparisons. Changing a selected input or rubric
-requires fresh matched runs. Version-2 captures sort selected cases by case ID for
+requires fresh matched runs. Current captures sort selected cases by case ID for
 both execution and comparison, so reordering cases alone does not change the
 selected fingerprint or invocation order. The full-suite snapshot preserves the
 original order for audit.
 
 The two run hashes must differ: comparing one capture against itself is rejected.
 Independently capture the same skill again to inspect variation in execution and
-human judgments. With matching skill contents, comparison automatically emits a
-**SAME-SKILL VARIABILITY** report; directory-name changes do not make a new skill.
-It reports verdict transitions without calling them skill improvements. For
-example, repeat the current-skill command into `work/eval/current-repeat.json`,
+human judgments. Pass `--variability` explicitly when comparing captures with
+matching skill contents to emit a **SAME-SKILL VARIABILITY** report; directory-name
+changes do not make a new skill. It reports verdict transitions without calling
+them skill improvements. For example, repeat the current-skill command into
+`work/eval/current-repeat.json`,
 assess that fresh capture, then compare it with `work/eval/current.json` using
-their respective assessments. No extra comparison flag is needed.
+their respective assessments and `--variability`. Without that flag, identical
+skill contents are rejected; the flag is also rejected if skill contents differ.
+The default comparison is reserved for a skill change.
 
 Different judgments of the same captured answer remain reviewer disagreement;
 reconcile those manually rather than passing that one run twice. Neither
@@ -213,7 +233,7 @@ Prompt JSON uses a canonical object-key order, so reordering input keys alone
 does not change the bytes sent to the runner. Each attempt records the full
 `prompt_sha256` and a separate `input_sha256` for the prompt without skill content.
 Run validation recomputes both hashes, and comparison requires matching input
-hashes for each case/trial. The skill contents determine which report mode applies.
+hashes for each case/trial. The requested mode must match whether skill contents changed.
 
 Each check/trial is classified as:
 

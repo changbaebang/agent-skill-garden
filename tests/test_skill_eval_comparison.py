@@ -23,22 +23,49 @@ class SkillEvaluationComparisonTests(fixture.SkillEvaluationFixture, unittest.Te
         EVAL.save(path, value)
         return path
 
-    def compare_unjudged(self, before, after):
+    def compare_unjudged(self, before, after, *, variability=False):
         return EVAL.compare(before, after, EVAL.judgments(before, None),
-                            EVAL.judgments(after, None))
+                            EVAL.judgments(after, None), variability=variability)
 
     def test_same_capture_with_conflicting_grades_is_rejected(self):
         path, record = self.capture()
         before_grades = self.grade(record, "fail", ["fail", "fail"])
         after_grades = self.grade(record, "pass", ["pass", "pass"])
-        with self.assertRaisesRegex(ValueError, "same captured run"):
-            EVAL.compare(record, EVAL.read_run(path), EVAL.judgments(record, before_grades),
-                         EVAL.judgments(record, after_grades))
-        report = self.root / "same-run.md"
+        for variability in (False, True):
+            with self.subTest(variability=variability):
+                with self.assertRaisesRegex(ValueError, "same captured run"):
+                    EVAL.compare(record, EVAL.read_run(path), EVAL.judgments(record, before_grades),
+                                 EVAL.judgments(record, after_grades), variability=variability)
+                report = self.root / f"same-run-{variability}.md"
+                flag = ("--variability",) if variability else ()
+                self.assertEqual(self.cli(
+                    "compare", path, path, "--before-assessment", before_grades,
+                    "--after-assessment", after_grades, "--out", report, *flag), 2)
+                self.assertFalse(report.exists())
+
+    def test_identical_skill_content_requires_explicit_variability_opt_in(self):
+        before_path, before = self.capture()
+        after_path, after = self.capture("after", ("--skill", "none"))
+        with self.assertRaisesRegex(ValueError, "use --variability"):
+            self.compare_unjudged(before, after)
+        output = self.root / "implicit-variability.md"
+        self.assertEqual(self.cli("compare", before_path, after_path, "--out", output), 2)
+        self.assertFalse(output.exists())
         self.assertEqual(self.cli(
-            "compare", path, path, "--before-assessment", before_grades,
-            "--after-assessment", after_grades, "--out", report), 2)
-        self.assertFalse(report.exists())
+            "compare", before_path, after_path, "--out", output, "--variability"), 0)
+        report = output.read_text(encoding="utf-8")
+        self.assertIn("SAME-SKILL VARIABILITY", report)
+        self.assertIn("inconclusive=1", report)
+
+    def test_variability_flag_rejects_changed_skill_content(self):
+        before_path, before = self.capture()
+        after_path, after = self.capture("after")
+        with self.assertRaisesRegex(ValueError, "--variability requires identical skill content"):
+            self.compare_unjudged(before, after, variability=True)
+        output = self.root / "wrong-mode.md"
+        self.assertEqual(self.cli(
+            "compare", before_path, after_path, "--out", output, "--variability"), 2)
+        self.assertFalse(output.exists())
 
     def test_fresh_runs_with_identical_skill_content_show_variability_not_improvement(self):
         before_path, before = self.capture()
@@ -50,7 +77,8 @@ class SkillEvaluationComparisonTests(fixture.SkillEvaluationFixture, unittest.Te
         output = self.root / "variability.md"
         self.assertEqual(self.cli(
             "compare", before_path, after_path, "--before-assessment", left,
-            "--after-assessment", right, "--out", output, "--fail-on-regression"), 1)
+            "--after-assessment", right, "--out", output,
+            "--variability", "--fail-on-regression"), 1)
         report = output.read_text(encoding="utf-8")
         self.assertIn("SAME-SKILL VARIABILITY", "\n".join(report.splitlines()[:4]))
         self.assertIn("not skill improvement", report)
@@ -73,7 +101,9 @@ class SkillEvaluationComparisonTests(fixture.SkillEvaluationFixture, unittest.Te
         self.assertEqual(before["skill"]["files"], after["skill"]["files"])
         self.assertEqual([row["prompt_sha256"] for row in before["results"]],
                          [row["prompt_sha256"] for row in after["results"]])
-        report, regressed = self.compare_unjudged(before, after)
+        with self.assertRaisesRegex(ValueError, "use --variability"):
+            self.compare_unjudged(before, after)
+        report, regressed = self.compare_unjudged(before, after, variability=True)
         self.assertFalse(regressed)
         self.assertIn("SAME-SKILL VARIABILITY", report)
         self.assertIn("inconclusive=1", report)
@@ -88,6 +118,14 @@ class SkillEvaluationComparisonTests(fixture.SkillEvaluationFixture, unittest.Te
         self.assertIn("SYNTHETIC", report)
         self.assertIn("inconclusive=1", report)
         self.assertIn("improved=0", report)
+
+    def test_supervisor_identity_changes_are_incomparable(self):
+        _, before = self.capture()
+        _, after = self.capture("after")
+        self.assertEqual(before["supervisor_identity"], after["supervisor_identity"])
+        after["supervisor_identity"]["files"]["0"] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "supervisor_identity differs"):
+            self.compare_unjudged(before, after)
 
     def test_changed_skill_keeps_improved_and_regressed_labels(self):
         before_path, before = self.capture()

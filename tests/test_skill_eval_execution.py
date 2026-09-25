@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
+import select
 import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -245,7 +248,7 @@ class SkillEvaluationExecutionTests(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIsNone(result["exit_code"])
         self.assertIn("answer", result["answer"])
-        self.assertIn("Supervisor exited without a valid runner status", result["error"])
+        self.assertIn("No valid runner exit status was received", result["error"])
         self.assertLess(result["elapsed_seconds"], 2)
 
     def test_failed_group_cleanup_is_reported_instead_of_claiming_success(self):
@@ -254,6 +257,138 @@ class SkillEvaluationExecutionTests(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertEqual(result["exit_code"], 0)
         self.assertIn("Process-group cleanup failed", result["error"])
+
+    def test_double_signal_denial_uses_liveness_eof_without_hanging(self):
+        with patch.object(EVAL.os, "killpg", side_effect=PermissionError("group denied")), \
+                patch.object(EVAL.subprocess.Popen, "kill", side_effect=PermissionError("pid denied")):
+            result = self.execute("print('answer')")
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Process-group cleanup failed", result["error"])
+        self.assertLess(result["elapsed_seconds"], 2)
+
+    def test_cleanup_waits_are_bounded_even_if_signal_and_wait_both_fail(self):
+        real_popen = EVAL.subprocess.Popen
+        real_wait = real_popen.wait
+        processes = []
+
+        def spawn(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            processes.append(process)
+            return process
+
+        try:
+            with patch.object(EVAL.subprocess, "Popen", side_effect=spawn), \
+                    patch.object(real_popen, "wait", side_effect=subprocess.TimeoutExpired("test", .5)) as wait, \
+                    patch.object(real_popen, "kill", side_effect=PermissionError("pid denied")), \
+                    patch.object(EVAL.os, "killpg", side_effect=PermissionError("group denied")):
+                result = self.execute("print('answer')")
+            self.assertEqual(result["status"], "error")
+            self.assertIn("Supervisor termination failed", result["error"])
+            self.assertIn("Supervisor cleanup exceeded 1.0s", result["error"])
+            self.assertLess(result["elapsed_seconds"], 2)
+            self.assertEqual(len(wait.call_args_list), 2)
+            for call in wait.call_args_list:
+                self.assertGreater(call.kwargs["timeout"], 0)
+                self.assertLessEqual(call.kwargs["timeout"], 1)
+        finally:
+            # Liveness EOF reaches the real supervisor despite the mocked wait.
+            for process in processes:
+                real_wait(process, timeout=2)
+
+    def test_timeout_keeps_missing_status_and_cleanup_failure_diagnostics(self):
+        with patch.object(EVAL.os, "killpg", side_effect=PermissionError("group denied")):
+            result = self.execute("import time; time.sleep(10)", timeout=.2)
+        self.assertEqual(result["status"], "timeout")
+        self.assertIsNone(result["exit_code"])
+        self.assertIn("No valid runner exit status was received", result["error"])
+        self.assertIn("Process-group cleanup failed", result["error"])
+        self.assertLess(result["elapsed_seconds"], 2)
+
+    def test_closed_standard_descriptors_do_not_alias_private_pipes(self):
+        for descriptors in ((0, 1), (0, 1, 2)):
+            with self.subTest(descriptors=descriptors), tempfile.TemporaryDirectory() as folder:
+                output = Path(folder) / "result.json"
+                script = (
+                    "import importlib.util,json,os,pathlib,sys\n"
+                    f"spec=importlib.util.spec_from_file_location('ev',{str(ROOT / 'scripts/skill_eval.py')!r})\n"
+                    "ev=importlib.util.module_from_spec(spec);spec.loader.exec_module(ev)\n"
+                    f"for fd in {descriptors!r}: os.close(fd)\n"
+                    "result=ev.execute([sys.executable,'-c',\"print('answer')\"],'',2)\n"
+                    f"pathlib.Path({str(output)!r}).write_text(json.dumps(result))\n")
+                process = subprocess.run([sys.executable, "-c", script], capture_output=True, timeout=4)
+                self.assertEqual(process.returncode, 0, process.stderr)
+                result = json.loads(output.read_text())
+                self.assertEqual(result["status"], "ok")
+                self.assertEqual(result["exit_code"], 0)
+                self.assertEqual(result["answer"].strip(), "answer")
+
+    @unittest.skipUnless(os.name == "posix", "parent liveness uses POSIX pipes/signals")
+    def test_harness_death_stops_supervisor_and_group_before_and_after_runner_exit(self):
+        for phase in ("running", "exited"):
+            for death_signal in (signal.SIGTERM, signal.SIGKILL):
+                with self.subTest(phase=phase, signal=death_signal), tempfile.TemporaryDirectory() as folder:
+                    ready = Path(folder) / "ready"
+                    marker = Path(folder) / "late-write"
+                    pid_file = Path(folder) / "supervisor-pid"
+                    proof_read, proof_write = os.pipe()
+                    late_write = (f"import pathlib,time; time.sleep(.6); pathlib.Path({str(marker)!r}).touch(); "
+                                  "time.sleep(10)")
+                    if phase == "running":
+                        runner = f"import pathlib; pathlib.Path({str(ready)!r}).touch(); " + late_write
+                    else:
+                        runner = ("import subprocess,sys; subprocess.Popen([sys.executable,'-c',"
+                                  + repr(late_write) + "]); print('answer')")
+                    harness = (
+                        "import importlib.util,os,pathlib,sys\n"
+                        f"spec=importlib.util.spec_from_file_location('ev',{str(ROOT / 'scripts/skill_eval.py')!r})\n"
+                        "ev=importlib.util.module_from_spec(spec);spec.loader.exec_module(ev)\n"
+                        "real_popen=ev.subprocess.Popen\n"
+                        "def spawn(*args,**kwargs):\n"
+                        f"    kwargs['pass_fds']=(*kwargs.get('pass_fds',()),{proof_write})\n"
+                        "    process=real_popen(*args,**kwargs)\n"
+                        f"    pathlib.Path({str(pid_file)!r}).write_text(str(process.pid))\n"
+                        "    return process\n"
+                        "ev.subprocess.Popen=spawn\n"
+                        "real_read=ev.os.read\n"
+                        "def read(fd,size):\n"
+                        "    data=real_read(fd,size)\n"
+                        f"    if {phase!r}=='exited' and b'\"exit_code\": 0' in data: "
+                        f"pathlib.Path({str(ready)!r}).touch()\n"
+                        "    return data\n"
+                        "ev.os.read=read\n"
+                        f"ev.execute([sys.executable,'-c',{runner!r}],'',10)\n")
+                    process = subprocess.Popen([sys.executable, "-c", harness], pass_fds=(proof_write,),
+                                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    os.close(proof_write)
+                    supervisor_exited = False
+                    try:
+                        deadline = time.monotonic() + 3
+                        while not ready.exists() and time.monotonic() < deadline:
+                            self.assertIsNone(process.poll(), "test harness exited before ready")
+                            time.sleep(.01)
+                        self.assertTrue(ready.exists(), "requested runner phase must be reached")
+                        os.kill(process.pid, death_signal)
+                        process.wait(timeout=2)
+                        # Only harness and supervisor own this proof write end.
+                        # EOF proves supervisor exit without mistaking zombies
+                        # for live processes or using a potentially reused PID.
+                        self.assertTrue(select.select([proof_read], [], [], 2)[0])
+                        supervisor_exited = os.read(proof_read, 1) == b""
+                        self.assertTrue(supervisor_exited)
+                        time.sleep(.7)
+                        self.assertFalse(marker.exists(), "runner/descendant must not survive parent death")
+                    finally:
+                        if process.poll() is None:
+                            process.kill()
+                            process.wait(timeout=2)
+                        if not supervisor_exited and pid_file.exists():
+                            # The still-open proof pipe identifies our live
+                            # supervisor; only clean the group created above.
+                            try:
+                                os.killpg(int(pid_file.read_text()), signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+                        os.close(proof_read)
 
     @unittest.skipUnless(os.name == "posix", "process groups require POSIX")
     def test_inherited_output_pipes_cannot_outlive_deadline(self):

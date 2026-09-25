@@ -106,7 +106,10 @@ class SkillEvaluationEfficiencyTests(unittest.TestCase):
                 mock.patch.object(EVAL, "execute", return_value=self.answer()) as execute, self.quiet():
             EVAL.run(args)
         self.assertEqual(execute.call_count, 40)
-        self.assertEqual(identity.call_count, 2)
+        self.assertEqual(identity.call_count, 4)
+        commands = [call.args[0] for call in identity.call_args_list]
+        self.assertEqual(commands.count([sys.executable, str(self.runner)]), 2)
+        self.assertEqual(commands.count([sys.executable]), 2)
         self.assertEqual(len(EVAL.read_run(args.out)["results"]), 40)
 
     def test_same_size_edit_with_restored_mtime_stops_before_the_next_runner_call(self):

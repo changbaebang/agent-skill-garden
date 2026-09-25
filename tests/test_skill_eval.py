@@ -117,7 +117,7 @@ class SkillEvaluationTests(SkillEvaluationFixture, unittest.TestCase):
     def test_compatibility_rejects_environment_suite_runner_and_model_drift(self):
         _, before = self.capture()
         _, after = self.capture("after")
-        for field in ("harness_sha256", "selected_suite_sha256", "model", "environment", "runner_identity", "repeat", "kind", "split"):
+        for field in ("harness_sha256", "selected_suite_sha256", "model", "environment", "runner_identity", "supervisor_identity", "repeat", "kind", "split"):
             candidate = dict(after, **{field: "changed"})
             with self.subTest(field=field), self.assertRaisesRegex(ValueError, field):
                 EVAL.compare(before, candidate, EVAL.judgments(before, None),

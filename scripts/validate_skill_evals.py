@@ -6,20 +6,24 @@ import sys
 from pathlib import Path
 
 if __package__:
+    from . import validate_evals
     from .skill_eval import main as validate_command
 else:
+    import validate_evals
     from skill_eval import main as validate_command
 
 
 def validate_suites(root: Path) -> int:
     evals = root / "evals"
-    misplaced = sorted(path for path in evals.glob("*.json") if path.name != "routing.json")
+    misplaced = sorted(path for path in evals.glob("*.json")
+                       if path.name not in validate_evals.ROUTING_FILES)
     if misplaced:
         for path in misplaced:
             print(
                 f"ERROR: unexpected top-level evaluation file: evals/{path.name}. "
                 "Move behavioral suites to evals/suites/; put other definition formats "
-                "in a named evals/<kind>/ directory. Only routing.json is allowed here.",
+                "in a named evals/<kind>/ directory. Top-level routing definitions "
+                "must be registered with validate_evals.py.",
                 file=sys.stderr,
             )
         return 1
