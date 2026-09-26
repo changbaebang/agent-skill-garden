@@ -17,6 +17,8 @@ Repository validation discovers all JSON definitions under `evals/suites/`,
 including nested directories, and rejects malformed suites. At the top level of
 `evals/`, routing definitions registered in `validate_evals.py` are allowed
 (currently `routing.json`); the routing validator checks every registered file.
+For an additional routing-format definition, add its filename to `ROUTING_FILES`
+in `scripts/validate_evals.py`. Behavioral suites belong under `evals/suites/`.
 Other misplaced JSON files fail with migration guidance. Put other definition
 formats in named directories such as `evals/schemas/`, with their own validators.
 Keep captured runs and assessments in
@@ -137,7 +139,14 @@ before termination, rather than the supervisor's kill status. A runner status
 already observed is retained even if inherited output pipes later time out.
 Missing or invalid runner status from the supervisor and cleanup failures always
 add diagnostics to `error`.
-They change an otherwise successful attempt to `error`, while an existing timeout
+Before the first status write attempt, the supervisor can also report an internal
+exception as `Supervisor failure:` or `Supervisor waiter failure:`, followed by
+its traceback and with `exit_code: null`. These are reported internal failures,
+rather than missing or malformed status messages. Once a write starts, no second
+JSON message is appended: a complete first message preserves the recorded runner
+status, while a partial message is invalid. A later exception's traceback may
+therefore be unavailable; cleanup failures are still reported separately.
+Recorded failure diagnostics change an otherwise successful attempt to `error`, while an existing timeout
 keeps its `timeout` status and carries the additional diagnostics. Processes that
 escape the group with `setsid`/`setpgid`, change privileges, or remain in an
 uninterruptible kernel state are outside the guaranteed cleanup boundary; use

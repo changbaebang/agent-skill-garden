@@ -275,6 +275,7 @@ def execute(command: list[str], prompt: str, timeout: float,
 import json, os, selectors, signal, subprocess, sys, threading, traceback
 control = int(sys.argv[1])
 alive = int(sys.argv[2])
+control_started = False
 try:
     with selectors.DefaultSelector() as events:
         events.register(alive, selectors.EVENT_READ, "parent")
@@ -285,28 +286,58 @@ try:
             runner = subprocess.Popen(sys.argv[3:], close_fds=True)
         except OSError as error:
             outcome = {"exit_code": None, "error": str(error)}
+        if runner is not None:
+            # Created after spawn (not inherited), before closing stdio (>= 3).
+            completed, notify = os.pipe()
         for fd in (0, 1, 2):
             os.close(fd)
         if runner is not None:
-            completed, notify = os.pipe()
             outcomes = []
+            notification_failure = None
+            waiter_done = threading.Event()
             def wait_for_runner():
+                global notification_failure
                 try:
                     outcomes.append({"exit_code": runner.wait(), "error": ""})
                 except BaseException:
                     outcomes.append({"exit_code": None, "error": "Supervisor waiter failure:\\n" + traceback.format_exc()})
                 finally:
-                    os.close(notify)
+                    try:
+                        os.close(notify)
+                    except BaseException as error:
+                        notification_failure = error
+                    finally:
+                        waiter_done.set()
             events.register(completed, selectors.EVENT_READ, "runner")
             threading.Thread(target=wait_for_runner, daemon=True).start()
-            while not outcomes:
-                for key, _ in events.select():
+            while True:
+                observed_completion = False
+                # Normal completion wakes immediately. The timeout only checks
+                # for a finished waiter whose notification close failed.
+                for key, _ in events.select(.1):
                     if key.data == "parent" and not os.read(alive, 1):
                         raise SystemExit
+                    if key.data == "runner":
+                        if os.read(completed, 1):
+                            raise RuntimeError("Unexpected runner completion notification data")
+                        if not outcomes:
+                            raise RuntimeError("Runner completion notification without an outcome")
+                        observed_completion = True
+                if observed_completion:
+                    break
+                if waiter_done.is_set():
+                    if notification_failure is not None:
+                        raise RuntimeError("Runner completion notification failed") from notification_failure
+                    if not outcomes:
+                        raise RuntimeError("Runner completion waiter finished without an outcome")
+                    break
             outcome = outcomes[0]
             events.unregister(completed)
             os.close(completed)
     message = (json.dumps(outcome) + "\\n").encode()
+    # A signal can arrive after a kernel write but before Python sees its count.
+    # Mark the attempt first; never append a second JSON after an ambiguous write.
+    control_started = True
     while message:
         message = message[os.write(control, message):]
     os.close(control)
@@ -317,13 +348,15 @@ except SystemExit:
 except BaseException:
     # stdout/stderr may already be closed. Keep the diagnosis in the private
     # status channel before group cleanup prevents Python printing a traceback.
-    outcome = {"exit_code": None, "error": "Supervisor failure:\\n" + traceback.format_exc()}
-    try:
-        message = (json.dumps(outcome) + "\\n").encode()
-        while message:
-            message = message[os.write(control, message):]
-    except OSError:
-        pass
+    if not control_started:
+        outcome = {"exit_code": None, "error": "Supervisor failure:\\n" + traceback.format_exc()}
+        try:
+            message = (json.dumps(outcome) + "\\n").encode()
+            control_started = True
+            while message:
+                message = message[os.write(control, message):]
+        except OSError:
+            pass
 finally:
     # The harness alone owns the write end. EOF also catches SIGKILL/SIGTERM
     # without depending on its finally block, both during and after the runner.
@@ -475,7 +508,7 @@ def run(args: argparse.Namespace) -> None:
     suite = suite_at(args.suite)
     skill = skill_at(args.skill)
     command = args.runner[1:] if args.runner[:1] == ["--"] else args.runner
-    require(bool(command), "provide a runner command after --")
+    require(bool(command) and nonempty(command[0]), "provide a nonempty runner executable after --")
     identity = runner_identity(command)
     command = identity["command"]
     stamps = runner_stamps(identity)
@@ -830,7 +863,7 @@ def main(argv: list[str] | None = None) -> int:
                 handle.write(report)
             print(f"Saved comparison to {args.out}")
             return 1 if regressed and args.fail_on_regression else 0
-    except (ValueError, OSError, KeyError, TypeError) as error:
+    except (ValueError, OSError, KeyError, TypeError, RecursionError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
     return 0

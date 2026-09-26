@@ -55,15 +55,19 @@ class BehavioralSuiteDiscoveryTests(unittest.TestCase):
         self.assertIn("evals/suites/", result.stderr)
         self.assertIn("evals/<kind>/", result.stderr)
         self.assertIn("Registered top-level routing files: routing.json", result.stderr)
-        self.assertIn("routing-format definitions only", result.stderr)
-        self.assertNotIn("must be registered", result.stderr)
+        self.assertIn("For a new routing-format definition only", result.stderr)
+        self.assertIn("ROUTING_FILES in scripts/validate_evals.py", result.stderr)
 
     def test_routing_load_failures_use_error_diagnostics_without_tracebacks(self):
         route = self.root / "evals/routing.json"
-        for name, content in (("missing", None), ("invalid-json", b"{"),
-                              ("invalid-utf8", b"\xff")):
+        for name, content in (("invalid-json", b"{"), ("invalid-utf8", b"\xff"),
+                              ("missing", None),
+                              ("too-deep", b"[" * 200000 + b"]" * 200000)):
             with self.subTest(name=name):
-                if content is not None:
+                if content is None:
+                    route.unlink(missing_ok=True)
+                    self.assertFalse(route.exists())
+                else:
                     route.write_bytes(content)
                 result = subprocess.run(
                     [sys.executable, "-c",
@@ -109,12 +113,26 @@ class BehavioralSuiteDiscoveryTests(unittest.TestCase):
         self.assertNotEqual(malformed.returncode, 0)
         self.assertIn("evals/routes-b.json must contain a non-empty array", malformed.stderr)
 
+        for expected_skill in ([], {}):
+            with self.subTest(expected_skill=expected_skill):
+                (self.root / "evals/routes-b.json").write_text(json.dumps([{
+                    "id": "route-1", "prompt": "Review this change.",
+                    "expected_skill": expected_skill, "forbidden_actions": ["publish"],
+                }]), encoding="utf-8")
+                malformed = validate_registered()
+                self.assertEqual(malformed.returncode, 1)
+                self.assertIn("evals/routes-b.json: case 1: unknown expected skill", malformed.stderr)
+                self.assertNotIn("Traceback", malformed.stderr)
+
     def test_malformed_definition_in_suite_directory_is_not_skipped(self):
         (self.suites / "good.json").write_text(json.dumps(self.value), encoding="utf-8")
         nested = self.suites / "nested"
         nested.mkdir()
         (nested / "bad.json").write_text('{"version": 1, "id": "invalid"}', encoding="utf-8")
-        self.assertNotEqual(self.validate().returncode, 0)
+        result = self.validate()
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("ERROR:", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
 
     def test_empty_suite_directory_does_not_claim_success(self):
         self.assertNotEqual(self.validate().returncode, 0)

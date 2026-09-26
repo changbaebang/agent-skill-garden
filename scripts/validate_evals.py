@@ -20,7 +20,7 @@ def validate_routes(root: Path) -> int:
     for filename in ROUTING_FILES:
         try:
             cases = json.loads((root / "evals" / filename).read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        except (OSError, ValueError, RecursionError) as error:
             errors.append(f"evals/{filename}: cannot load routing definition: {error}")
             continue
         if not isinstance(cases, list) or not cases:
@@ -42,7 +42,7 @@ def validate_routes(root: Path) -> int:
             if not isinstance(case.get("prompt"), str) or not case["prompt"].strip():
                 errors.append(f"{prefix}: missing prompt")
             expected = case.get("expected_skill")
-            if expected not in installed:
+            if not isinstance(expected, str) or expected not in installed:
                 errors.append(f"{prefix}: unknown expected skill {expected!r}")
             forbidden = case.get("forbidden_actions")
             if not isinstance(forbidden, list) or not forbidden or not all(

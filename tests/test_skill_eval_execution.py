@@ -25,6 +25,121 @@ class SkillEvaluationExecutionTests(unittest.TestCase):
     def execute(self, code, timeout=3, prompt=""):
         return EVAL.execute([sys.executable, "-c", code], prompt, timeout, sys.executable)
 
+    def execute_with_supervisor_change(self, transform, code="print('answer')", timeout=2):
+        real_popen = EVAL.subprocess.Popen
+
+        def spawn(command, *args, **kwargs):
+            command = command[:]
+            command[3] = transform(command[3])
+            return real_popen(command, *args, **kwargs)
+
+        with patch.object(EVAL.subprocess, "Popen", side_effect=spawn):
+            return self.execute(code, timeout=timeout)
+
+    def test_completion_pipe_descriptors_do_not_alias_standard_streams(self):
+        def transform(source):
+            line = "completed, notify = os.pipe()"
+            self.assertIn(line, source)
+            return source.replace(line, line +
+                "\n            assert min(completed, notify) >= 3, (completed, notify)", 1)
+
+        result = self.execute_with_supervisor_change(transform)
+        self.assertEqual(result["status"], "ok", result["error"])
+        self.assertEqual(result["exit_code"], 0)
+
+    def test_completion_eof_without_outcome_is_reported_without_spinning(self):
+        def transform(source):
+            start = source.index("            def wait_for_runner():")
+            end = source.index("            events.register(completed", start)
+            return (source[:start] + "            def wait_for_runner():\n"
+                    "                os.close(notify)\n" + source[end:])
+
+        result = self.execute_with_supervisor_change(transform, timeout=.8)
+        self.assertEqual(result["status"], "error")
+        self.assertIsNone(result["exit_code"])
+        self.assertIn("Runner completion notification without an outcome", result["error"])
+
+    def test_unexpected_completion_bytes_are_consumed_and_reported(self):
+        def transform(source):
+            start = source.index("            def wait_for_runner():")
+            end = source.index("            events.register(completed", start)
+            return (source[:start] + "            def wait_for_runner():\n"
+                    "                os.write(notify, b'unexpected')\n"
+                    "                os.close(notify)\n" + source[end:])
+
+        result = self.execute_with_supervisor_change(transform, timeout=.8)
+        self.assertEqual(result["status"], "error")
+        self.assertIsNone(result["exit_code"])
+        self.assertIn("Unexpected runner completion notification data", result["error"])
+
+    def test_notification_close_failure_has_a_bounded_diagnostic_fallback(self):
+        def transform(source):
+            marker = "control = int(sys.argv[1])"
+            self.assertIn(marker, source)
+            return source.replace(marker,
+                "real_close = os.close\n"
+                "def failed_notify_close(fd):\n"
+                "    if fd == globals().get('notify'):\n"
+                "        raise OSError('notify-close-marker')\n"
+                "    return real_close(fd)\n"
+                "os.close = failed_notify_close\n" + marker, 1)
+
+        result = self.execute_with_supervisor_change(
+            transform, "import time; time.sleep(.05); print('answer')", timeout=.8)
+        self.assertEqual(result["status"], "error")
+        self.assertIsNone(result["exit_code"])
+        self.assertIn("Runner completion notification failed", result["error"])
+        self.assertIn("notify-close-marker", result["error"])
+
+    @unittest.skipUnless(os.name == "posix", "signals require POSIX")
+    def test_sigint_after_control_write_never_appends_a_second_json(self):
+        real_read = EVAL.os.read
+        for mode in ("full", "partial"):
+            chunks = []
+
+            def capture_read(fd, size):
+                block = real_read(fd, size)
+                if block.startswith(b'{"exit_'):
+                    chunks.append(block)
+                return block
+
+            def transform(source):
+                marker = "control = int(sys.argv[1])"
+                self.assertIn(marker, source)
+                return source.replace(marker,
+                    "real_write = os.write\n"
+                    "interrupted_write = False\n"
+                    "def interrupt_control_write(fd, data):\n"
+                    "    global interrupted_write\n"
+                    "    if fd == control and not interrupted_write:\n"
+                    "        interrupted_write = True\n"
+                    f"        payload = data if {mode!r} == 'full' else data[:8]\n"
+                    "        count = real_write(fd, payload)\n"
+                    "        os.kill(os.getpid(), signal.SIGINT)\n"
+                    "        return count\n"
+                    "    return real_write(fd, data)\n"
+                    "os.write = interrupt_control_write\n" + marker, 1)
+
+            with self.subTest(mode=mode), patch.object(EVAL.os, "read", capture_read):
+                result = self.execute_with_supervisor_change(transform)
+                captured = b"".join(chunks)
+                self.assertEqual(result["answer"].strip(), "answer")
+                if mode == "full":
+                    self.assertEqual(json.loads(captured), {"exit_code": 0, "error": ""})
+                    self.assertEqual(result["exit_code"], 0)
+                    self.assertNotIn("No valid runner exit status", result["error"])
+                    # macOS can reject killpg against the already-dead leader.
+                    # Preserve the runner record without hiding cleanup errors.
+                    if result["status"] == "error":
+                        self.assertIn("Process-group cleanup failed", result["error"])
+                    else:
+                        self.assertEqual(result["status"], "ok")
+                else:
+                    self.assertEqual(captured, b'{"exit_c')
+                    self.assertEqual(result["status"], "error")
+                    self.assertIsNone(result["exit_code"])
+                    self.assertIn("No valid runner exit status", result["error"])
+
     @unittest.skipUnless(os.name == "posix", "process groups require POSIX")
     def test_large_stdout_does_not_hide_timeout(self):
         result = self.execute(
@@ -314,7 +429,7 @@ class SkillEvaluationExecutionTests(unittest.TestCase):
             def spawn(command, *args, **kwargs):
                 command = command[:]
                 lines = command[3].splitlines()
-                marker = "try:" if phase == "before" else "if runner is not None:"
+                marker = "try:" if phase == "before" else "outcomes = []"
                 index = next(index for index, line in enumerate(lines) if line.strip() == marker)
                 indent = len(lines[index]) - len(lines[index].lstrip())
                 if phase == "before":
@@ -352,6 +467,7 @@ class SkillEvaluationExecutionTests(unittest.TestCase):
         self.assertIn("RuntimeError: waiter-diagnostic-marker", result["error"])
         self.assertLess(result["elapsed_seconds"], 2)
 
+    @unittest.skipUnless(os.name == "posix", "resource limits require POSIX")
     def test_supervisor_supports_private_descriptors_above_select_fd_setsize(self):
         script = (
             "import importlib.util,json,os,resource,sys\n"

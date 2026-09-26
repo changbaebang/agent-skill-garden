@@ -53,9 +53,11 @@ else
   exit 1
 fi
 
+active_patterns=0
 while IFS= read -r pattern || [[ -n "$pattern" ]]; do
   [[ -z "${pattern//[[:space:]]/}" ]] && continue
   [[ "$pattern" == \#* ]] && continue
+  active_patterns=$((active_patterns + 1))
   if scan "$pattern"; then
     failed=1
   else
@@ -66,6 +68,11 @@ while IFS= read -r pattern || [[ -n "$pattern" ]]; do
     fi
   fi
 done < "$PATTERNS"
+
+if [[ "$active_patterns" -eq 0 ]]; then
+  echo "No active public-safety patterns; cannot verify public safety." >&2
+  exit 1
+fi
 
 if [[ "$failed" -ne 0 ]]; then
   echo "Public-safety scan failed." >&2

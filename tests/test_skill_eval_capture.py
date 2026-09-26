@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -50,9 +51,50 @@ class SkillCaptureRegressionTests(unittest.TestCase):
         values.update(changes)
         return argparse.Namespace(**values)
 
+    def test_deep_json_cli_failure_is_reported_before_creating_capture_or_running_adapter(self):
+        self.suite.write_text('{"nested":' + '[' * 2000 + '0' + ']' * 2000 + '}')
+        marker = self.root / "runner-started"
+        self.runner.write_text(f"from pathlib import Path\nPath({str(marker)!r}).touch()\n")
+        output = self.root / "deep-capture.json"
+        commands = [
+            ["validate", str(self.suite)],
+            ["run", "--suite", str(self.suite), "--skill", "none", "--label", "deep",
+             "--model", "scripted", "--environment", "fixture", "--synthetic",
+             "--out", str(output), "--", sys.executable, str(self.runner)],
+        ]
+        for args in commands:
+            with self.subTest(action=args[0]):
+                result = subprocess.run([sys.executable, str(EVAL.__file__), *args],
+                                        text=True, capture_output=True, check=False)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertTrue(result.stderr.startswith("ERROR:"), result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertFalse(output.exists())
+                self.assertFalse(Path(str(output) + ".journal.jsonl").exists())
+                self.assertFalse(marker.exists())
+
     def answer(self, text="Synthetic captured answer."):
         return dict(status="ok", elapsed_seconds=0.01, answer=text, error="", exit_code=0,
                     stdout_truncated=False, stderr_truncated=False)
+
+    def test_empty_runner_executable_is_rejected_before_reserving_output(self):
+        for command in ([], [""], ["  "], ["--", ""]):
+            with self.subTest(command=command), mock.patch.object(EVAL, "execute") as execute:
+                args = self.args(runner=command)
+                with self.assertRaisesRegex(ValueError, "nonempty runner executable"):
+                    EVAL.run(args)
+                execute.assert_not_called()
+                self.assertFalse(args.out.exists())
+                self.assertFalse(self.journal_path(args).exists())
+
+    def test_unavailable_nonempty_runner_keeps_readable_failure_evidence(self):
+        args = self.args(runner=[str(self.root / "unavailable-runner")], repeat=1)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            EVAL.run(args)
+        record = EVAL.read_run(args.out)
+        self.assertEqual(record["results"][0]["status"], "error")
+        self.assertIsNone(record["results"][0]["exit_code"])
+        self.assertTrue(record["results"][0]["error"])
 
     def journal_path(self, args):
         return Path(str(args.out) + ".journal.jsonl")

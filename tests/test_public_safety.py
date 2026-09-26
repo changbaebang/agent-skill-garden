@@ -88,6 +88,14 @@ class PublicSafetyTests(unittest.TestCase):
         self.write("config/forbidden-patterns.txt", "(\n")
         self.assert_scanners(False, "scanner failed")
 
+    def test_empty_or_comment_only_pattern_configuration_fails_closed(self):
+        self.write("public.txt")
+        for name, content in (("empty", ""), ("whitespace", "\n \t\r\n"),
+                              ("comments", "# No active rules\n\n \t\n# Another comment\n")):
+            with self.subTest(configuration=name):
+                self.write("config/forbidden-patterns.txt", content)
+                self.assert_scanners(False, "No active public-safety patterns")
+
     def test_git_enumeration_failure_does_not_pass(self):
         shutil.rmtree(self.root / ".git")
         self.assert_scanners(False, "Cannot enumerate repository files")
