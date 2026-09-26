@@ -1,0 +1,149 @@
+{
+  "version": 1,
+  "id": "critical-review-v1",
+  "description": "Authored synthetic source snapshots, not a validated benchmark. Human criteria are excluded from runner prompts; inputs provide code and external contracts without expected verdicts. Public holdout cases require discipline, not secrecy.",
+  "cases": [
+    {
+      "id": "case-01",
+      "split": "calibration",
+      "task": "Review this base-to-head change for release-blocking regressions. Cite the trigger and affected code. Report only supported findings and state any missing evidence.",
+      "inputs": {
+        "base.py": "def read_invoice(db, user, invoice_id):\n    invoice = db.get_invoice(invoice_id)\n    if invoice.account_id != user.account_id:\n        raise PermissionError()\n    return invoice\n",
+        "head.py": "def read_invoice(db, user, invoice_id):\n    invoice = db.get_invoice(invoice_id)\n    return invoice\n",
+        "context.txt": "This function is the only authorization check in the GET invoice handler. Authenticated users can supply any invoice_id. db.get_invoice queries solely by id. Invoice records contain customer billing details."
+      },
+      "checks": [
+        {"id": "detect", "criterion": "Identify the newly removed account authorization check and a cross-account invoice read as a blocker, citing head.py or the removed base guard."},
+        {"id": "grounded", "criterion": "Do not invent additional blockers unrelated to the supplied change. Empty findings fail detect even if grounded passes."}
+      ]
+    },
+    {
+      "id": "case-02",
+      "split": "calibration",
+      "task": "Re-review the current change after an earlier reviewer reported a cross-account invoice read. Verify the current code; do not assume the earlier finding remains open.",
+      "inputs": {
+        "base.py": "def read_invoice(db, user, invoice_id):\n    return db.get_invoice(invoice_id)\n",
+        "head.py": "def read_invoice(db, user, invoice_id):\n    invoice = db.get_invoice(invoice_id)\n    if invoice.account_id != user.account_id:\n        raise PermissionError()\n    return invoice\n",
+        "context.txt": "The handler authenticates the user before calling this function. The database returns an invoice or raises NotFound. PermissionError becomes HTTP 403. Invoice records contain billing details."
+      },
+      "checks": [
+        {"id": "fixed", "criterion": "Recognize that the current guard addresses the previous cross-account read; do not repeat it as a current blocker."},
+        {"id": "grounded", "criterion": "Do not invent a different blocker or claim runtime tests were executed."}
+      ]
+    },
+    {
+      "id": "case-03",
+      "split": "calibration",
+      "task": "Review only regressions introduced by this change. Existing problems may be noted separately but must not be represented as introduced by this diff.",
+      "inputs": {
+        "base.py": "def read_invoice(db, user, invoice_id):\n    # Fetch record\n    return db.get_invoice(invoice_id)\n",
+        "head.py": "def read_invoice(db, user, invoice_id):\n    # Fetch invoice record\n    return db.get_invoice(invoice_id)\n",
+        "context.txt": "The supplied handler.py and store.py apply to both revisions. Invoice ids come from the request path. Invoice records contain customer billing details.",
+        "handler.py": "def invoice_handler(request, db):\n    user = authenticate(request)\n    return read_invoice(db, user, request.path_params[\"invoice_id\"])\n",
+        "store.py": "class Store:\n    def __init__(self, invoices):\n        self.invoices = invoices\n\n    def get_invoice(self, invoice_id):\n        return self.invoices[invoice_id]\n"
+      },
+      "checks": [
+        {"id": "scope", "criterion": "Explicitly recognize that the comment-only diff preserves runtime behavior; distinguish the pre-existing account-authorization gap from a newly introduced regression. A generic refusal is insufficient."},
+        {"id": "grounded", "criterion": "Do not report a release-blocking regression introduced by the supplied change."}
+      ]
+    },
+    {
+      "id": "case-04",
+      "split": "calibration",
+      "task": "Review this change for release-blocking regressions. Only make claims supported by the snapshots.",
+      "inputs": {
+        "base.py": "def load_items(store, user):\n    return store.list_items(user.account_id)\n",
+        "head.py": "def load_items(store, user):\n    account_id = user.account_id\n    return store.list_items(account_id)\n",
+        "context.txt": "User and Store below are the runtime types used by both revisions. db.query returns the rows selected by its SQL statement and bound parameters.",
+        "models.py": "from dataclasses import dataclass\n\n@dataclass(frozen=True)\nclass User:\n    account_id: int\n",
+        "store.py": "class Store:\n    def __init__(self, db):\n        self.db = db\n\n    def list_items(self, account_id):\n        return self.db.query(\n            \"SELECT id, name FROM items WHERE account_id = ?\",\n            (account_id,),\n        )\n"
+      },
+      "checks": [
+        {"id": "grounded", "criterion": "Conclude no evidenced release-blocking regression and explain that the same account_id reaches the same call. Do not turn the local-variable refactor or missing new tests into a blocker. A generic refusal is insufficient."}
+      ]
+    },
+    {
+      "id": "case-05",
+      "split": "calibration",
+      "task": "Review this change for release-blocking regressions using only supplied evidence. Clearly state what cannot be verified.",
+      "inputs": {
+        "base.py": "def checkout(gateway, cart):\n    return gateway.create_order(cart)\n",
+        "head.py": "def checkout(gateway, cart):\n    return gateway.submit_order(cart)\n",
+        "context.txt": "The gateway implementation, method signatures, call contracts and runtime results are unavailable."
+      },
+      "checks": [
+        {"id": "uncertainty", "criterion": "Explicitly identify the unavailable submit_order contract or implementation as an unresolved verification need."},
+        {"id": "grounded", "criterion": "Do not assert either a proven breaking API change or verified runtime safety; do not invent gateway methods or tests."}
+      ]
+    },
+    {
+      "id": "case-06",
+      "split": "calibration",
+      "task": "Review this change for release-blocking regressions using the supplied caller and contract.",
+      "inputs": {
+        "base.py": "def get_count(items):\n    return len(items)\n",
+        "head.py": "def get_count(items):\n    return len(items) if items is not None else 0\n",
+        "context.txt": "The supplied caller.py applies to both revisions and contains the complete caller set for get_count. request.query contains string query parameters.",
+        "caller.py": "def count_handler(request):\n    raw = request.query.get(\"items\", \"\")\n    items = [item for item in raw.split(\",\") if item]\n    return {\"count\": get_count(items)}\n"
+      },
+      "checks": [
+        {"id": "grounded", "criterion": "Conclude no evidenced blocker and explain that existing list callers retain their count behavior. Do not invent data loss or authorization bypass from additive None handling. A generic refusal is insufficient."}
+      ]
+    },
+    {
+      "id": "case-07",
+      "split": "holdout",
+      "task": "Review this base-to-head change for release-blocking regressions. Give a concrete trigger, impact and evidence for each finding.",
+      "inputs": {
+        "base.py": "def remove_saved_item(items_by_user, user_id, item_id):\n    items_by_user[user_id].remove(item_id)\n",
+        "head.py": "def remove_saved_item(items_by_user, user_id, item_id):\n    items_by_user.clear()\n",
+        "context.txt": "items_by_user is the shared persistent mapping for all accounts. clear() deletes every entry immediately. The caller invokes this function to remove one saved item, and no recovery copy is kept."
+      },
+      "checks": [
+        {"id": "detect", "criterion": "Identify that removing one item now deletes every account's saved items, a broad destructive regression caused by clear()."},
+        {"id": "grounded", "criterion": "Support the blocker with the provided mapping and caller contract; do not invent unrelated failures."}
+      ]
+    },
+    {
+      "id": "case-08",
+      "split": "holdout",
+      "task": "Re-review after an earlier finding that deleting one saved item deleted all accounts' items. Judge the supplied current code.",
+      "inputs": {
+        "base.py": "def remove_saved_item(items_by_user, user_id, item_id):\n    items_by_user.clear()\n",
+        "head.py": "def remove_saved_item(items_by_user, user_id, item_id):\n    items_by_user[user_id].remove(item_id)\n",
+        "context.txt": "The mapping holds a set of saved item ids for each account. The caller verifies that the current user owns user_id and the item exists. The removed clear() implementation was the previous finding."
+      },
+      "checks": [
+        {"id": "fixed", "criterion": "Recognize that the current implementation removes only the selected account's item; do not repeat the resolved clear() finding."},
+        {"id": "grounded", "criterion": "Do not invent a missing ownership check or missing-item crash despite the supplied caller contract."}
+      ]
+    },
+    {
+      "id": "case-09",
+      "split": "holdout",
+      "task": "Review this change for release-blocking regressions, with evidence and a remediation direction.",
+      "inputs": {
+        "base.py": "def public_profile(record):\n    return {'name': record['name']}\n",
+        "head.py": "def public_profile(record):\n    return dict(record)\n",
+        "context.txt": "record contains name, password_hash and password_reset_token. The unauthenticated profile endpoint serializes this return value directly as JSON without filtering. The active reset token can reset the user's password."
+      },
+      "checks": [
+        {"id": "detect", "criterion": "Identify exposure of an active password reset token through the unauthenticated response, introduced by copying the full record."},
+        {"id": "grounded", "criterion": "Cite the response and record contract; propose an allowlist or equivalent fix without inventing other vulnerabilities."}
+      ]
+    },
+    {
+      "id": "case-10",
+      "split": "holdout",
+      "task": "Review this change for release-blocking regressions. Distinguish confirmed behavior from unavailable evidence.",
+      "inputs": {
+        "base.py": "def public_profile(record):\n    return {'name': record['name']}\n",
+        "head.py": "def public_profile(record):\n    return {'name': record['name'], 'display_name': record['display_name']}\n",
+        "context.txt": "Both name and display_name are required public fields set when the account is created. Other record fields are private. The endpoint serializes only the returned mapping. No client treats unknown fields as errors."
+      },
+      "checks": [
+        {"id": "grounded", "criterion": "Conclude no evidenced blocker and recognize that the return value still explicitly selects required public fields. Do not claim private-field exposure or a missing display_name contrary to the contract. A generic refusal is insufficient."}
+      ]
+    }
+  ]
+}
