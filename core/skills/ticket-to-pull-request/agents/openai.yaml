@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ticket to Pull Request"
+  short_description: "Drive one work item from tracker to settled pull request"
+  default_prompt: "Use $ticket-to-pull-request to take this work item through branch, contract gate, implementation, verification, pull request, and review handling, pausing for my approval before every external write."

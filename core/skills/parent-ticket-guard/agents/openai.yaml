@@ -1,0 +1,4 @@
+interface:
+  display_name: "Parent Ticket Guard"
+  short_description: "Block writes to parent or epic issues owned by someone else"
+  default_prompt: "Use $parent-ticket-guard before any tracker write: confirm the target is not a parent or epic I do not own, and redirect the note to my own issue when it is."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deployment Approval Ticket"
+  short_description: "Draft a deployment approval ticket from the current guide, not an old ticket"
+  default_prompt: "Use $deployment-approval-ticket to re-read the deployment approval guide, collect the required inputs, and draft the approval ticket with verified fields and headings."

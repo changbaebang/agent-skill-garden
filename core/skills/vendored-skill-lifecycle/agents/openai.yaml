@@ -1,0 +1,4 @@
+interface:
+  display_name: "Vendored Skill Lifecycle"
+  short_description: "Borrow an external skill plugin for one ticket, then remove it"
+  default_prompt: "Use $vendored-skill-lifecycle to install this external plugin for the current ticket with a lock file and thin wrapper, and tear it down when the ticket closes."

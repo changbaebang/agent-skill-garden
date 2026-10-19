@@ -1,0 +1,4 @@
+interface:
+  display_name: "Production Change Report"
+  short_description: "Summarize what reached production in a period and flag deployment risks"
+  default_prompt: "Use $production-change-report to resolve the period I named into an exact interval, list every pull request merged to the production branch in it, explain the changes as user and operator outcomes with links, and flag high and medium deployment risks with verified mitigations."

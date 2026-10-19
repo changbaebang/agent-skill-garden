@@ -1,0 +1,4 @@
+interface:
+  display_name: "Topic Radar"
+  short_description: "Curate what to write next and what to learn first"
+  default_prompt: "Use $topic-radar to scan my sources, keep the learning backlog apart from drafts, and recommend one topic to write today."

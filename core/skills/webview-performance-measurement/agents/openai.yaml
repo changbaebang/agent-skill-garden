@@ -1,0 +1,4 @@
+interface:
+  display_name: "Webview Performance Measurement"
+  short_description: "Measure page-load timing percentiles inside an Android webview over the DevTools protocol"
+  default_prompt: "Use $webview-performance-measurement to attach to the page on the Android device without the inspector, collect the harness samples, and report p50/p75/p90 with provenance."

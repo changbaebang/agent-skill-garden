@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test Branch Reflect"
+  short_description: "Reflect a work branch onto a shared test branch without force"
+  default_prompt: "Use $test-branch-reflect to reflect this work branch onto the shared test branch: refresh the base, rebuild the test branch from the remote, merge or cherry-pick, and push only after I approve, never with force."

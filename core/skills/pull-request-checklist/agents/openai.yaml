@@ -1,0 +1,4 @@
+interface:
+  display_name: "Pull Request Checklist"
+  short_description: "Check a pull request's description and template gates, update sections on request"
+  default_prompt: "Use $pull-request-checklist to check this pull request's title and description against the repository template: hard and soft gates, risk tier rationale, tracker link, verification evidence, and base-branch strictness, and draft the decision."

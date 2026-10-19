@@ -1,0 +1,4 @@
+interface:
+  display_name: "Affected Verification"
+  short_description: "Run the checks CI will run on the affected scope and classify failures"
+  default_prompt: "Use $affected-verification to resolve the base, run type-check, tests, dependency rules, lint, and the lockfile check on the affected scope, and report each lane with numbers and whether a failure is mine or the environment's."

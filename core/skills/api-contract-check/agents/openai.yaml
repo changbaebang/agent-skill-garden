@@ -1,0 +1,4 @@
+interface:
+  display_name: "API Contract Check"
+  short_description: "Verify the real backend contract before writing client code"
+  default_prompt: "Use $api-contract-check to verify this work item's backend contract against the target environment and classify it as implementable, blocked, or no-op."
