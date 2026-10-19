@@ -1,0 +1,4 @@
+interface:
+  display_name: "Private Skill Scaffold"
+  short_description: "Create a private skill behind an anonymized path"
+  default_prompt: "Use $private-skill-scaffold to create a private skill with an opaque directory and an alias symlink, then check the sync boundary."

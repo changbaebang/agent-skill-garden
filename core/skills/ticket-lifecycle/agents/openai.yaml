@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ticket Lifecycle"
+  short_description: "Create, split, estimate, and close tracker tickets under one field contract"
+  default_prompt: "Use $ticket-lifecycle to draft this ticket change with every field its target state requires, and apply it only after I approve."

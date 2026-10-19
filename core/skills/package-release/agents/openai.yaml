@@ -1,0 +1,4 @@
+interface:
+  display_name: "Package Release"
+  short_description: "Prepare and prove a package release; the user tags"
+  default_prompt: "Use $package-release to decide the version from the changelog, promote the Unreleased header, sweep version literals, prove the tarball and CLI, and open the release pull request. I will tag and publish."

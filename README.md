@@ -39,7 +39,7 @@ requests may deserve a new or better skill.
 
 ## What you can copy
 
-- Twenty-one portable workflows for intake, execution, review, verification,
+- Forty-eight portable workflows for intake, execution, review, verification,
   repository lifecycle, knowledge work, closeout, and skill maintenance.
 - Shared policies for skill-first routing, explicit change authority, and
   read-back verification.

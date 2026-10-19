@@ -1,0 +1,4 @@
+interface:
+  display_name: "Standup Draft"
+  short_description: "Draft done, next, and blockers from your own activity, without posting"
+  default_prompt: "Use $standup-draft to read yesterday's standup thread, my pull requests, my tracker items, and my local sessions, and draft today's done, next, and blockers with evidence for me to paste."

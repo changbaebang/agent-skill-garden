@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review Scope Guard"
+  short_description: "Measure how far a change reaches before reviewing its lines"
+  default_prompt: "Use $review-scope-guard to count how many consumers this change reaches, flag shared defaults and overrides that consumers cannot opt out of, answer the five scope questions in writing, and draft the reach block for the pull request without posting it."

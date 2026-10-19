@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deployment Request Check"
+  short_description: "Verify that the pull requests behind a deployment request are approved, merged or mergeable, and green"
+  default_prompt: "Use $deployment-request-check to read the pull requests behind this deployment request, apply the release gate, and tell me approvable or hold with reasons; do not write to the tracker or the chat thread."

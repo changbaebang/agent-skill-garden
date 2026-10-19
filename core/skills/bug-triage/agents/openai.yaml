@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bug Triage"
+  short_description: "Diagnose a defect report through to an approval request without fixing it"
+  default_prompt: "Use $bug-triage to reproduce this defect report as written, find the line that causes it, decide whether this team can fix it alone, trace its history, draft test cases, and ask me for approval before anything is changed."

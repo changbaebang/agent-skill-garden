@@ -14,3 +14,7 @@ When a selected skill needs local repositories, publication targets, or service
 aliases, resolve one environment profile before inferring those values.
 
 Keep tool-specific invocation syntax out of canonical `SKILL.md` files.
+
+Optional hooks for this host live under `hooks/` next to this file. Each hook
+directory documents what it blocks and the `settings.json` entry that wires it.
+Hooks are host guards, not skills; the installer does not link them.

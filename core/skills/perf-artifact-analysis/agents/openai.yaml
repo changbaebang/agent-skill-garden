@@ -1,0 +1,4 @@
+interface:
+  display_name: "Performance Artifact Analysis"
+  short_description: "Read existing performance artifacts and attribute the bottleneck"
+  default_prompt: "Use $perf-artifact-analysis to read these performance artifacts, strip noise from the before/after delta, and tell me whether the bottleneck attribution is confirmed or still a hypothesis."

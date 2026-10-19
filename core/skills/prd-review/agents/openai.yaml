@@ -1,0 +1,4 @@
+interface:
+  display_name: "Requirements Document Review"
+  short_description: "Score a requirements document and check implementation alignment"
+  default_prompt: "Use $prd-review to score this requirements document on the five axes, classify it, and map its acceptance criteria to the implementation evidence I supply."

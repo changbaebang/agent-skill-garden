@@ -1,0 +1,4 @@
+interface:
+  display_name: "Quality Gate Triage"
+  short_description: "Read the gate log, fix only in-scope findings after approval, report the rest"
+  default_prompt: "Use $quality-gate-triage to read my pull request's quality gate log, tell me whether it really failed or never returned a verdict, and propose what to fix and what to say on the PR."

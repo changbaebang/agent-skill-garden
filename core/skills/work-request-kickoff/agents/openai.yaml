@@ -1,0 +1,4 @@
+interface:
+  display_name: "Work Request Kickoff"
+  short_description: "Read a chat work request, find the owner, draft the kickoff reply"
+  default_prompt: "Use $work-request-kickoff to read this work request thread and its context, define the work, identify the owner with evidence, and draft the kickoff reply for me to send; after the reply arrives, prepare implementation."

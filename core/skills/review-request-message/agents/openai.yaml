@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review Request Message"
+  short_description: "Draft a plain-language chat message asking reviewers to look at a pull request"
+  default_prompt: "Use $review-request-message to check whether this pull request still needs review and draft the chat message that asks for it, with mentions that notify and a plain-language summary; do not send it."

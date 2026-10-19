@@ -1,0 +1,4 @@
+interface:
+  display_name: "Incident Response"
+  short_description: "Declare, respond, resolve, and write the postmortem as drafts"
+  default_prompt: "Use $incident-response to find the current incident stage, gather the channel and tracker context, and draft the status update, resolution, or postmortem for me to post."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review Request Intake"
+  short_description: "Pick up, re-review, and answer review requests"
+  default_prompt: "Use $review-request-intake to check this chat thread or channel for pull request review requests, decide review or re-review, and report the plan before posting anything."

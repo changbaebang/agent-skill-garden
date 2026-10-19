@@ -1,0 +1,4 @@
+interface:
+  display_name: "Local Dev Environment"
+  short_description: "Trust a local HTTPS certificate, start one app, stop servers and free ports"
+  default_prompt: "Use $local-dev-environment to start or stop this app's local dev server with the hostname, ports, and certificate from my environment profile."
